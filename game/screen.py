@@ -8,6 +8,7 @@
 """
 
 import math
+from collections import Counter
 
 import pygame
 
@@ -124,6 +125,11 @@ class Arena:
         self.aiming = False      # 按了「瞄准」: 下一次点敌人会弹出瞄准窗口
         self.aim_target = None   # 瞄准窗口开着的时候, 瞄的是谁
         self.hidden_items = []   # 刚掉下来、掉落动画还没播到的武器 (先不画)
+        # 画面上看到的样子 (活着没有、躺着没有): 挨打的动画播完才改, 不然子弹还没飞到人就先倒了
+        self.pending = Counter()  # 每个人还有几个跟他有关的动画没播完
+        self.shown = {u: (u.alive, u.knocked_down or u.knocked_out) for u in self.battle.units}
+        self.ground_bg = make_ground_bg(self.battle)
+        self.hovered = None       # 这一帧鼠标指着的人 (每帧只算一次)
 
     # ---------- 状态 ----------
 
@@ -348,7 +354,9 @@ class Arena:
         if self.mode == "setup":
             return
         for event in self.battle.take_events():
-            self.anims.append(self.make_anim(event))
+            a = self.make_anim(event)
+            self.pending.update(a["affects"])
+            self.anims.append(a)
         if self.anims:
             a = self.anims[0]
             if not a["started"]:
@@ -357,6 +365,10 @@ class Arena:
             a["t"] += dt
             if a["t"] >= a["dur"]:
                 self.anims.pop(0)
+                self.pending.subtract(a["affects"])
+        for u in self.battle.units:  # 没有动画在等的人, 画面上就照现在的样子画
+            if self.pending[u] <= 0:
+                self.shown[u] = (u.alive, u.knocked_down or u.knocked_out)
         for f in self.floats:
             f["t"] += dt
         self.floats = [f for f in self.floats if f["t"] < f["delay"] + f["dur"]]
@@ -377,13 +389,14 @@ class Arena:
 
     def make_anim(self, event):
         kind = event[0]
-        a = {"kind": kind, "t": 0.0, "started": False}
+        a = {"kind": kind, "t": 0.0, "started": False, "affects": []}  # affects: 挨打的人 (动画播完才倒下)
         if kind == "move":
             a.update(unit=event[1], path=event[2], dur=STEP_TIME * (len(event[2]) - 1))
         elif kind == "attack":
-            a.update(result=event[1], dur=0.65 if event[1].shots > 1 else 0.45)
+            r = event[1]
+            a.update(result=r, dur=0.65 if r.shots > 1 else 0.45, affects=[r.target] + [u for u, _, _ in r.strays])
         elif kind == "throw":
-            a.update(result=event[1], dur=0.95)
+            a.update(result=event[1], dur=0.95, affects=[u for u, _, _ in event[1].victims])
         elif kind in ("drop", "pickup"):
             a.update(unit=event[1], item=event[2], dur=0.3)
             if kind == "drop":
@@ -400,12 +413,14 @@ class Arena:
         elif a["kind"] == "attack":
             r = a["result"]
             self.turn_to(r.attacker, tile_center(*r.attacker.pos), tile_center(*r.target.pos))
-            if r.shots > 1:  # 连发: 写中了几发
+            if r.shots > 1:  # 连发: 写打中他几发; 歪掉的子弹打中别人, 别人头上也飘字
                 if r.hits == 0:
                     self.float_text(r.target, f"没打中 (0/{r.shots})", TEXT, delay=0.3)
                 else:
                     color = YELLOW if r.crit else RED
                     self.float_text(r.target, f"-{r.damage} ({r.hits}/{r.shots} 发)", color, delay=0.3)
+                for u, dealt, _ in r.strays:
+                    self.float_text(u, f"-{dealt}", RED, delay=0.35)
             elif not r.hit:
                 self.float_text(r.target, "没打中", TEXT)
             elif r.crit:
@@ -495,8 +510,8 @@ class Arena:
         if self.mode == "setup":
             self.setup_screen.draw(surf)
             return
-        surf.fill(BG)
-        self.draw_ground(surf)
+        self.hovered = self.unit_under(self.mouse)
+        surf.blit(self.ground_bg, (0, 0))
         self.draw_planning(surf)
         for item in self.battle.ground:
             if item not in self.hidden_items:
@@ -520,41 +535,24 @@ class Arena:
         if self.battle.result and not self.busy:
             self.draw_end(surf)
 
-    def draw_ground(self, surf):
-        b = self.battle
-        for y in range(b.height):
-            for x in range(b.width):
-                n = (x * 73856093) ^ (y * 19349663)
-                pts = tile_diamond(x, y)
-                pygame.draw.polygon(surf, SAND[n % len(SAND)], pts)
-                pygame.draw.polygon(surf, TILE_LINE, pts, 1)
-                # 地上的小石子和裂缝, 每格固定, 不会一闪一闪
-                cx, cy = tile_center(x, y)
-                if n % 5 == 0:
-                    pygame.draw.circle(surf, (96, 82, 60), (cx + (n % 17) - 8, cy + (n % 7) - 3), 2)
-                if n % 11 == 3:
-                    pygame.draw.line(surf, (100, 86, 62), (cx - 10, cy + 2), (cx + 4, cy - 3), 1)
-
     def draw_planning(self, surf):
         """轮到你的时候: 能走到的格子发绿; 鼠标指着的格子画出要走的路"""
         if not self.players_turn() or self.aim_target:
             return
         b = self.battle
         you = b.current
-        layer = pygame.Surface((W, H), pygame.SRCALPHA)
-        for tile in b.reachable(you):
-            pygame.draw.polygon(layer, (120, 220, 120, 40), tile_diamond(*tile))
-        surf.blit(layer, (0, 0))
+        for tile in b.reachable(you):  # 半透明的绿菱形, 一格一格贴 (不用每帧新建整屏的透明图层)
+            x, y = tile_top(*tile)
+            surf.blit(TINT_GREEN, (x - TILE_W / 2, y))
 
-        target = self.unit_under(self.mouse)
+        target = self.hovered
         if target is not None and target.side != you.side and you.weapon.kind == "throw":
-            blast = pygame.Surface((W, H), pygame.SRCALPHA)
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     tile = (target.pos[0] + dx, target.pos[1] + dy)
                     if b.in_bounds(tile):
-                        pygame.draw.polygon(blast, (255, 110, 50, 70), tile_diamond(*tile))
-            surf.blit(blast, (0, 0))
+                        x, y = tile_top(*tile)
+                        surf.blit(TINT_ORANGE, (x - TILE_W / 2, y))
         if self.mouse[1] >= PANEL_Y or self.mouse[1] < TOP_BAR or target:
             return
         tile = screen_to_tile(*self.mouse)
@@ -575,16 +573,17 @@ class Arena:
     def draw_units(self, surf):
         b = self.battle
         # 倒下的人先画 (垫在下面), 活人按远近画, 近的挡住远的
-        units = sorted(b.units, key=lambda u: (u.alive, sum(self.unit_tile_pos(u))))
-        hovered = self.unit_under(self.mouse) if self.players_turn() else None
+        units = sorted(b.units, key=lambda u: (self.shown[u][0], sum(self.unit_tile_pos(u))))
+        hovered = self.hovered if self.players_turn() else None
         for u in units:
+            alive, lying = self.shown[u]
             cx, cy = self.unit_screen_pos(u)
-            if u.alive and u is b.current and not b.result:
+            if alive and u is b.current and not b.result:
                 pygame.draw.ellipse(surf, YELLOW, (cx - 17, cy - 8, 34, 16), 2)
             if u is hovered and u.side != b.current.side:
                 pygame.draw.ellipse(surf, RED, (cx - 17, cy - 8, 34, 16), 2)
-            draw_person(surf, cx, cy, LOOKS.get(u.short, DEFAULT_LOOK), self.facing[u], u.weapon_id, u.alive,
-                        lying=u.knocked_down or u.knocked_out)
+            draw_person(surf, cx, cy, LOOKS.get(u.short, DEFAULT_LOOK), self.facing[u], u.weapon_id, alive,
+                        lying=lying)
 
     def draw_effects(self, surf):
         a = self.anims[0] if self.anims else None
@@ -595,14 +594,21 @@ class Arena:
             tx, ty = self.unit_screen_pos(r.target)
             f = self.facing[r.attacker]
             start = (ax + f * 15, ay - 26)
-            for i in range(r.shots):
-                t0 = i * 0.08
-                if not t0 <= a["t"] < t0 + 0.06:
-                    continue
-                if i < r.hits:  # 前几发画成打中, 后面的画成打偏 (大概的样子)
-                    end = (tx + (i % 3 - 1) * 4, ty - 26 + (i % 2) * 6)
-                else:
-                    end = (tx + 18 - (i % 4) * 9, ty - 46 - (i % 3) * 6)
+            if r.paths:  # 连发: 每发子弹沿着自己那条线飞, 一发一发地闪
+                for i, (end_tile, who) in enumerate(r.paths):
+                    t0 = i * 0.08
+                    if not t0 <= a["t"] < t0 + 0.06:
+                        continue
+                    if who is not None:
+                        ex, ey = self.unit_screen_pos(who)
+                        end = (ex, ey - 26)
+                    else:
+                        ex, ey = tile_center(*end_tile)
+                        end = (ex, ey - 26)
+                    pygame.draw.line(surf, YELLOW, start, end, 2)
+                    pygame.draw.circle(surf, (255, 240, 160), start, 4)
+            elif a["t"] < 0.12:
+                end = (tx, ty - 26) if r.hit else (tx + 18, ty - 44)
                 pygame.draw.line(surf, YELLOW, start, end, 2)
                 pygame.draw.circle(surf, (255, 240, 160), start, 4)
         if a and a["kind"] == "throw":
@@ -631,15 +637,20 @@ class Arena:
             pygame.draw.circle(surf, (120, 150, 80), (int(x) - 1, int(y) - 1), 2)
             return
         e = min(1.0, (a["t"] - 0.5) / 0.45)
-        layer = pygame.Surface((W, H), pygame.SRCALPHA)
+        # 只在落点周围一小块画 (不用整屏的透明图层)
+        size = (TILE_W * 3 + 40, TILE_H * 3 + 180)
+        layer = pygame.Surface(size, pygame.SRCALPHA)
+        ox, oy = lx - size[0] / 2, ly - size[1] / 2 - 40  # 这块小图的左上角在画面上的位置
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 tile = (r.landing[0] + dx, r.landing[1] + dy)
                 if self.battle.in_bounds(tile):
-                    pygame.draw.polygon(layer, (255, 150, 40, int(150 * (1 - e))), tile_diamond(*tile))
-        pygame.draw.circle(layer, (255, 220, 120, int(220 * (1 - e))), (int(lx), int(ly) - 10), int(14 + 70 * e))
-        pygame.draw.circle(layer, (255, 120, 30, int(200 * (1 - e))), (int(lx), int(ly) - 10), int(8 + 40 * e))
-        surf.blit(layer, (0, 0))
+                    pts = [(px - ox, py - oy) for px, py in tile_diamond(*tile)]
+                    pygame.draw.polygon(layer, (255, 150, 40, int(150 * (1 - e))), pts)
+        center = (int(lx - ox), int(ly - 10 - oy))
+        pygame.draw.circle(layer, (255, 220, 120, int(220 * (1 - e))), center, int(14 + 70 * e))
+        pygame.draw.circle(layer, (255, 120, 30, int(200 * (1 - e))), center, int(8 + 40 * e))
+        surf.blit(layer, (ox, oy))
 
     def draw_top_bar(self, surf):
         b = self.battle
@@ -715,7 +726,8 @@ class Arena:
         surf.blit(name, name.get_rect(topright=(WEAPON_SLOT.right - 30, WEAPON_SLOT.y + 6)))
         surf.blit(ui.text(22, f"花 {b.attack_cost(you)} 点", ui.AMBER), (WEAPON_SLOT.x + 10, WEAPON_SLOT.bottom - 32))
         if w.burst_ap:  # 冲锋枪: 单发还是连发 (点这个格子或者按 F 换)
-            mode = ui.text(16, f"连发 {rules.BURST_ROUNDS} 发" if you.burst else "单发", YELLOW if you.burst else ui.AMBER)
+            on = you.bursting()
+            mode = ui.text(16, f"连发 {rules.BURST_ROUNDS} 发" if on else "单发", YELLOW if on else ui.AMBER)
             surf.blit(mode, (WEAPON_SLOT.x + 10, WEAPON_SLOT.y + 47))
             surf.blit(ui.text(12, "点这里或按 F 换", DIM), (WEAPON_SLOT.x + 10, WEAPON_SLOT.y + 68))
         if w.kind == "throw":
@@ -764,7 +776,7 @@ class Arena:
             return
         b = self.battle
         you = b.current
-        target = self.unit_under(self.mouse)
+        target = self.hovered
         if target is None:
             lines = self.item_tooltip()
         elif target.side == you.side:
@@ -781,8 +793,9 @@ class Arena:
                 lines.append((problem, (240, 110, 70)))
             elif you.bursting():
                 shots = min(rules.BURST_ROUNDS, you.ammo_in_hand)
-                lines.append((f"每发命中 {b.hit_chance(you, target)}% · 花 {b.attack_cost(you)} 点 · 连发 {shots} 发",
-                              ui.AMBER))
+                center, side_a, side_b = rules.burst_split(shots)
+                lines.append((f"每发命中 {b.hit_chance(you, target)}% · 花 {b.attack_cost(you)} 点", ui.AMBER))
+                lines.append((f"连发 {shots} 发: {center} 发对准他, {side_a + side_b} 发往两边散", ui.GREEN_DIM))
             elif you.weapon.kind == "throw":
                 lines.append((f"命中 {b.hit_chance(you, target)}% · 花 {b.attack_cost(you)} 点 · 炸 3×3", ui.AMBER))
                 if rules.distance(you.pos, target.pos) <= rules.BLAST_RADIUS:
@@ -860,14 +873,18 @@ class Arena:
             name = rules.PART_NAMES[part]
             surf.blit(ui.text(19, name, ui.GREEN, glow=True), (rect.x + 12, rect.y + 9))
             if problem:
-                note = ui.text(13, problem if len(problem) < 9 else "打不了", (240, 110, 70))
+                note = ui.text(14, short_reason(problem), (240, 110, 70))
             else:
                 note = ui.text(20, f"{b.hit_chance(you, target, part)}%", ui.AMBER, glow=True)
             surf.blit(note, note.get_rect(midright=(rect.right - 12, rect.centery)))
         if hover:
-            bonus = rules.aim_crit_bonus(hover)
-            text = f"暴击几率 {b.crit_chance(you, hover)}%" + (f" (瞄准这里多 {bonus}%)" if bonus else "")
-            img = ui.text(16, text, ui.GREEN, glow=True)
+            problem = b.attack_problem(you, target, hover)
+            if problem:  # 打不了: 把原因写全
+                img = ui.text(16, problem, (240, 110, 70), glow=True)
+            else:
+                bonus = rules.aim_crit_bonus(hover)
+                text = f"暴击几率 {b.crit_chance(you, hover)}%" + (f" (瞄准这里多 {bonus}%)" if bonus else "")
+                img = ui.text(16, text, ui.GREEN, glow=True)
             surf.blit(img, img.get_rect(midleft=(AIM_WIN.x + 34, AIM_CANCEL.centery)))
         on = AIM_CANCEL.collidepoint(self.mouse)
         pygame.draw.rect(surf, (110, 100, 78) if on else ui.METAL, AIM_CANCEL)
@@ -875,9 +892,7 @@ class Arena:
         surf.blit(*centered(ui.text(17, "取消 (Esc / 右键)", ui.AMBER), AIM_CANCEL.center))
 
     def draw_end(self, surf):
-        shade = pygame.Surface((W, H), pygame.SRCALPHA)
-        shade.fill((0, 0, 0, 150))
-        surf.blit(shade, (0, 0))
+        surf.blit(END_SHADE, (0, 0))
         won = self.battle.result == "won"
         big = ui.text(48, "你赢了!" if won else "你倒下了……", GREEN if won else RED)
         surf.blit(big, big.get_rect(center=(W // 2, H // 2 - 40)))
@@ -919,6 +934,47 @@ def make_panel_bg():
         for y in (8, H - PANEL_Y - 9):
             ui.rivet(bg, (x, y))
     return bg
+
+
+def make_ground_bg(battle):
+    """地面 (每格的沙子、石子、裂缝) 每局只画一次, 每帧直接贴上去"""
+    bg = pygame.Surface((W, H))
+    bg.fill(BG)
+    for y in range(battle.height):
+        for x in range(battle.width):
+            n = (x * 73856093) ^ (y * 19349663)
+            pts = tile_diamond(x, y)
+            pygame.draw.polygon(bg, SAND[n % len(SAND)], pts)
+            pygame.draw.polygon(bg, TILE_LINE, pts, 1)
+            # 地上的小石子和裂缝, 每格固定, 不会一闪一闪
+            cx, cy = tile_center(x, y)
+            if n % 5 == 0:
+                pygame.draw.circle(bg, (96, 82, 60), (cx + (n % 17) - 8, cy + (n % 7) - 3), 2)
+            if n % 11 == 3:
+                pygame.draw.line(bg, (100, 86, 62), (cx - 10, cy + 2), (cx + 4, cy - 3), 1)
+    return bg
+
+
+def tint_diamond(color):
+    """一格大小的半透明菱形 (标能走到的格子、手雷会炸到的格子)"""
+    img = pygame.Surface((TILE_W, TILE_H), pygame.SRCALPHA)
+    pygame.draw.polygon(img, color, [(TILE_W / 2, 0), (TILE_W, TILE_H / 2), (TILE_W / 2, TILE_H), (0, TILE_H / 2)])
+    return img
+
+
+TINT_GREEN = tint_diamond((120, 220, 120, 40))
+END_SHADE = pygame.Surface((W, H), pygame.SRCALPHA)  # 打完以后盖在画面上的一层暗色 (只做一次)
+END_SHADE.fill((0, 0, 0, 150))
+TINT_ORANGE = tint_diamond((255, 110, 50, 70))
+
+
+def short_reason(problem):
+    """瞄准窗口的部位按钮放不下长句子, 换个短说法 (鼠标指着时下面会写全)"""
+    for key, short in (("行动点不够", "点数不够"), ("太远", "太远了"), ("走到旁边", "要走过去"),
+                       ("没子弹", "没子弹"), ("废了", "手废了"), ("两只手", "要两只手")):
+        if key in problem:
+            return short
+    return problem[:5]
 
 
 def make_aim_bg():

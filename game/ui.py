@@ -73,14 +73,27 @@ def rivets(surf, rect, inset=8):
         rivet(surf, pos)
 
 
+_scanline_cache = {}
+
+
+def _scanlines(size):
+    """一条条扫描线的透明图层 (同样大小的只做一次; 提示框每帧都画, 不能每帧新建)"""
+    img = _scanline_cache.get(size)
+    if img is None:
+        img = pygame.Surface(size, pygame.SRCALPHA)
+        for y in range(0, size[1], 3):
+            pygame.draw.line(img, (0, 0, 0, 60), (0, y), (size[0], y))
+        if len(_scanline_cache) > 200:
+            _scanline_cache.clear()
+        _scanline_cache[size] = img
+    return img
+
+
 def crt(surf, rect):
     """老式绿字屏幕: 深色底, 一条条扫描线, 凹下去的边框"""
     rect = pygame.Rect(rect)
     pygame.draw.rect(surf, SCREEN_BG, rect, border_radius=10)
-    lines = pygame.Surface(rect.size, pygame.SRCALPHA)
-    for y in range(0, rect.height, 3):
-        pygame.draw.line(lines, (0, 0, 0, 60), (0, y), (rect.width, y))
-    surf.blit(lines, rect.topleft)
+    surf.blit(_scanlines(rect.size), rect.topleft)
     pygame.draw.rect(surf, METAL_DARK, rect, 3, border_radius=10)
     pygame.draw.rect(surf, (30, 44, 26), rect.inflate(-6, -6), 1, border_radius=8)
 

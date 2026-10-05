@@ -21,7 +21,8 @@ PICKUP_AP = 2  # 捡起地上的武器花几点
 AIM_AP = 1     # 瞄准部位多花几点
 GET_UP_AP = 3  # 被打倒在地上, 下一回合先花几点爬起来
 BLIND_PENALTY = 30  # 瞎了以后命中扣多少
-BURST_ROUNDS = 5    # 连发一次打几发
+BURST_ROUNDS = 10   # 连发一次打几发 (2026-10-05 照原版从 5 改成 10)
+BURST_SPREAD = 10   # 连发往两边散的子弹, 歪出去几度
 BLAST_RADIUS = 1    # 手雷炸多大: 落点周围 1 格, 也就是 3×3
 MIN_HIT = 5    # 命中几率最低 5%
 MAX_HIT = 95   # 命中几率最高 95%
@@ -71,6 +72,13 @@ def max_hp(vigor):
 def melee_bonus(vigor):
     """近身打的伤害再加 体魄 ÷ 2 (舍掉小数)"""
     return vigor // 2
+
+
+def burst_split(shots):
+    """连发的子弹怎么分: (对准目标的, 往一边歪的, 往另一边歪的)。三分之一 (往上取整) 对准, 剩下的分到两边"""
+    center = (shots + 2) // 3
+    rest = shots - center
+    return center, (rest + 1) // 2, rest // 2
 
 
 def throw_range(vigor):

@@ -202,7 +202,7 @@ class TestArena(unittest.TestCase):
         you.hands[0] = "smg"
         you.loaded[0] = 20
         self.click(screen.WEAPON_SLOT.center)  # 点武器格子换连发
-        self.assertTrue(you.burst)
+        self.assertTrue(you.burst[0])
         self.run_frames()
         self.right_click(self.enemy_pos(gunner))  # 连发不能瞄准
         self.assertIsNone(self.arena.aim_target)
@@ -210,11 +210,11 @@ class TestArena(unittest.TestCase):
         self.mouse(self.enemy_pos(gunner))
         self.run_frames()
         self.click(self.enemy_pos(gunner))
-        self.assertEqual(you.ammo_in_hand, 15)
+        self.assertEqual(you.ammo_in_hand, 10)
         self.assertEqual(you.ap, 8 - 6)
         self.run_frames(30)
         self.key(pygame.K_f)  # F 换回单发
-        self.assertFalse(you.burst)
+        self.assertFalse(you.burst[0])
 
     def test_grenade_throw_animation(self):
         b = self.arena.battle
@@ -239,6 +239,33 @@ class TestArena(unittest.TestCase):
         self.click(screen.END_SETUP.center)
         self.assertEqual(self.arena.mode, "setup")
         self.run_frames()
+
+    def test_fall_shows_after_the_shot(self):
+        """挨打的人等子弹动画播完才倒下 (以前子弹还没飞到就先倒了)"""
+        b = self.arena.battle
+        you, gunner = b.units[0], b.units[2]
+        gunner.hp = 1
+        b.rng = random.Random(0)
+        you.stats["agility"] = 10  # 命中 95%
+        self.click(self.enemy_pos(gunner))
+        if gunner.alive:
+            self.skipTest("这一枪没打中")
+        self.run_frames(1, dt=0.05)
+        self.assertTrue(self.arena.shown[gunner][0])   # 动画还在播: 画面上还站着
+        self.run_frames(20, dt=0.05)
+        self.assertFalse(self.arena.shown[gunner][0])  # 播完了: 倒下
+
+    def test_aim_window_reasons(self):
+        b = self.arena.battle
+        you, gunner = b.units[0], b.units[2]
+        you.ap = 4
+        self.arena.open_aim(gunner)
+        self.mouse(self.arena.aim_buttons()["head"].center)
+        self.run_frames()
+        problem = b.attack_problem(you, gunner, "head")
+        self.assertEqual(problem, "行动点不够 (要 5 点)")
+        self.assertEqual(screen.short_reason(problem), "点数不够")
+        self.assertEqual(screen.short_reason("要走到旁边才能打"), "要走过去")
 
     def test_escape_quits(self):
         self.key(pygame.K_ESCAPE)
@@ -296,7 +323,7 @@ class TestSetup(unittest.TestCase):
         you = self.arena.battle.units[0]
         self.assertEqual(you.hands, ["smg", "grenade"])
         self.assertEqual(you.loaded, [20, 3])
-        self.assertEqual(you.spare, {"smg": 60})
+        self.assertEqual(you.spare, {"smg": 20})
         self.assertEqual(you.armor.name, "金属甲")
 
     def test_help_texts(self):

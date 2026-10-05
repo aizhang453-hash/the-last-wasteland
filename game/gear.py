@@ -42,7 +42,7 @@ WEAPONS = {
 
 # 练习场里能挑的武器 (按这个顺序摆), 还有每种枪带多少备用子弹、手雷拿几个
 CHOICES = ["fist", "knife", "pipe", "sledgehammer", "pistol", "rifle", "smg", "grenade"]
-SPARE_AMMO = {"pistol": 24, "rifle": 15, "smg": 60}
+SPARE_AMMO = {"pistol": 24, "rifle": 15, "smg": 20}  # 冲锋枪 2026-10-05 从 60 减到 20 (照原版: 连发费子弹, 得省着用)
 GRENADES = 3
 
 ARMORS = {

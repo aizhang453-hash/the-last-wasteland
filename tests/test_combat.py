@@ -374,27 +374,68 @@ class TestAiming(unittest.TestCase):
 class TestBurstAndGrenade(unittest.TestCase):
     """第 3 步: 冲锋枪连发、手雷"""
 
-    def test_burst(self):
+    def test_burst_close_range(self):
+        """离得近 (3 格): 往两边歪的子弹也都落在目标身上"""
         you = person("你", PLAYER, (0, 0), agility=6, hands=("smg", None), ammo={"smg": 20})
         foe = person("敌", ENEMY, (3, 0))
         foe.hp = foe.max_hp = 200
-        # 5 发: 中、不中、中 (暴击)、不中、中
-        b = Battle([you, foe], rng=FixedRng(1, 100, 5, 99, 1, 1, 9, 99, 1, 100, 4))
+        # 10 发都打中, 第 3 发暴击
+        rolls = [1, 100, 5] * 2 + [1, 1, 9] + [1, 100, 5] * 7
+        b = Battle([you, foe], rng=FixedRng(*rolls))
         self.assertFalse(b.toggle_burst(foe))           # 还没轮到他
         self.assertTrue(b.toggle_burst(you))
         self.assertEqual(b.attack_cost(you), 6)
         self.assertEqual(b.attack_problem(you, foe, "head"), "连发不能瞄准")
         r = b.attack(you, foe)
-        self.assertEqual((r.shots, r.hits, r.crit), (5, 3, True))
-        self.assertEqual(r.damage, 5 + 18 + 4)
-        self.assertEqual(you.ammo_in_hand, 15)
+        self.assertEqual((r.shots, r.hits, r.crit), (10, 10, True))
+        self.assertEqual(r.damage, 5 * 9 + 18)
+        self.assertEqual(you.ammo_in_hand, 10)
         self.assertEqual(you.ap, 8 - 6)
-        self.assertIn("5 发中了 3 发, 有 1 发暴击", b.log[-1][0])
+        self.assertIn("10 发里打中他 10 发, 有 1 发暴击", b.log[-1][0])
+        self.assertEqual(len(r.paths), 10)
+
+    def far_battle(self, *rolls, others=()):
+        you = person("你", PLAYER, (0, 5), agility=6, hands=("smg", None))
+        foe = person("敌", ENEMY, (10, 5))
+        you.burst[0] = True
+        b = Battle([you, foe, *others], width=15, height=11, rng=FixedRng(*rolls))
+        return b, you, foe
+
+    def test_burst_split(self):
+        self.assertEqual(rules.burst_split(10), (4, 3, 3))
+        self.assertEqual(rules.burst_split(5), (2, 2, 1))
+        self.assertEqual(rules.burst_split(1), (1, 0, 0))
+
+    def test_burst_spreads_far(self):
+        """离得远 (10 格): 只有对准的 4 发打得到他, 往两边歪的 6 发飞走了"""
+        b, you, foe = self.far_battle(*([1, 100, 5] * 3 + [1, 1, 9]))
+        r = b.attack(you, foe)
+        self.assertEqual((r.hits, r.damage, r.strays), (4, 5 * 3 + 18, []))
+        self.assertEqual(sum(1 for _, who in r.paths if who is None), 6)
+
+    def test_burst_hits_someone_beside(self):
+        """歪出去的子弹打中站在旁边的人"""
+        other = person("乙", ENEMY, (10, 7))
+        b, you, foe = self.far_battle(*([1, 100, 5] * 4 + [1, 6, 100, 100]), others=[other])
+        r = b.attack(you, foe)
+        self.assertEqual(r.hits, 4)
+        self.assertEqual([(u.name, d) for u, d, _ in r.strays], [("乙", 6)])
+        self.assertIn("有子弹打中了乙, 6 点伤害。", b.log[-1][0])
+
+    def test_burst_can_hit_your_own_side(self):
+        """挡在中间的同伴会先被算: 打中了就停在他身上"""
+        friend = person("同伴", PLAYER, (5, 5))
+        b, you, foe = self.far_battle(1, 4, *([100, 100] * 3), others=[friend])
+        r = b.attack(you, foe)
+        self.assertEqual(r.hits, 0)
+        self.assertEqual(friend.hp, friend.max_hp - 4)
+        self.assertEqual(r.strays[0][0], friend)
+        self.assertEqual(b.log[-1][1], "bad")
 
     def test_burst_with_few_bullets_and_stops_after_kill(self):
         you = person("你", PLAYER, (0, 0), hands=("smg", None))
         foe = person("敌", ENEMY, (3, 0))
-        you.burst = True
+        you.burst[0] = True
         you.loaded[0] = 3
         foe.hp = 4
         b = Battle([you, foe], rng=FixedRng(1, 100, 9, 1, 100, 9))
@@ -410,7 +451,7 @@ class TestBurstAndGrenade(unittest.TestCase):
         foe = person("敌", ENEMY, (3, 0))
         b = Battle([you, foe], rng=FixedRng())
         self.assertFalse(b.toggle_burst(you))
-        you.burst = True  # 就算开着, 手枪也还是单发
+        you.burst[0] = True  # 就算开着, 手枪也还是单发
         self.assertEqual(b.attack_cost(you), 4)
 
     def test_grenade_range_and_blast(self):
@@ -451,6 +492,92 @@ class TestBurstAndGrenade(unittest.TestCase):
         r = b.attack(you, foe)
         self.assertEqual({u.name for u, _, _ in r.victims}, {"你", "敌"})
         self.assertEqual(b.result, "lost")
+
+
+class TestReviewFixes(unittest.TestCase):
+    """2026-10-05 检查出来的毛病, 修好以后加的测试"""
+
+    def test_ai_does_not_switch_hands_forever(self):
+        """一手手雷、一手空着, 对头就在旁边: 以前会来回换手停不下来"""
+        you = person("你", PLAYER, (3, 3), hands=("grenade", None))
+        foe = person("敌", ENEMY, (4, 4), hands=("knife", None))
+        b = Battle([you, foe], rng=FixedRng(*([50] * 50)))
+        for _ in range(20):
+            if not ai.act(b, you):
+                break
+        else:
+            self.fail("20 次还没停下来")
+        self.assertLessEqual(you.ap, 8)
+
+    def test_ai_switches_once_to_the_better_hand(self):
+        you = person("你", PLAYER, (3, 3), hands=("grenade", "knife"))
+        foe = person("敌", ENEMY, (4, 4))
+        b = Battle([you, foe], rng=FixedRng(*([50] * 50)))
+        self.assertTrue(ai.act(b, you))      # 换成小刀
+        self.assertEqual(you.weapon.name, "小刀")
+        self.assertTrue(ai.act(b, you))      # 用小刀打, 不会再换回手雷
+        self.assertEqual(you.weapon.name, "小刀")
+        self.assertTrue(any("用小刀打" in t for t, _ in b.log))
+
+    def test_ai_grenade_short_of_points_stays(self):
+        """手雷够得着、只是点数不够扔: 待着不动 (以前会走进自己的爆炸范围)"""
+        you = person("你", PLAYER, (0, 0), vigor=5, hands=("grenade", None))
+        foe = person("敌", ENEMY, (6, 0))
+        b = Battle([you, foe], rng=FixedRng())
+        you.ap = 3
+        self.assertFalse(ai.act(b, you))
+        self.assertEqual(you.pos, (0, 0))
+
+    def test_dead_cannot_act(self):
+        you = person("你", PLAYER, (0, 0))
+        foe = person("敌", ENEMY, (3, 0))
+        b = Battle([you, foe], rng=FixedRng())
+        you.hp = 0
+        self.assertEqual(b.attack_problem(you, foe), "已经倒下了")
+        self.assertFalse(b.move(you, (1, 1)))
+        self.assertFalse(b.switch_hand(you))
+        self.assertFalse(ai.act(b, you))
+
+    def test_blowing_yourself_up_ends_your_turn(self):
+        """手雷把自己炸倒了 (别人还活着): 回合马上结束, 轮到下一个人"""
+        you = person("你", PLAYER, (0, 0))
+        thrower = person("扔的", ENEMY, (1, 0), hands=("grenade", "pistol"))  # 站得太近, 自己也在范围里
+        other = person("另一个", ENEMY, (9, 9))
+        thrower.hp = 1
+        b = Battle([you, thrower, other], width=10, height=10, rng=FixedRng(1, 10, 10), initiator=thrower)
+        b.attack(thrower, you)
+        self.assertFalse(thrower.alive)
+        self.assertIsNone(b.result)
+        self.assertIsNot(b.current, thrower)
+        self.assertTrue(b.current.alive)
+
+    def test_burst_switch_belongs_to_the_gun(self):
+        """连发开关记在枪上: 换到另一只手的冲锋枪还是单发; 捡起来的枪也是单发"""
+        you = person("你", PLAYER, (0, 0), hands=("smg", "smg"))
+        foe = person("敌", ENEMY, (5, 0))
+        b = Battle([you, foe], width=10, height=10, rng=FixedRng())
+        b.toggle_burst(you)
+        self.assertTrue(you.bursting())
+        b.switch_hand(you)
+        self.assertFalse(you.bursting())
+        b.switch_hand(you)
+        self.assertTrue(you.bursting())
+        you.crippled.add("right_arm")
+        item = b._drop(you, 0)
+        self.assertEqual(you.burst, [False, False])
+        you.crippled.clear()
+        you.hands[1] = None
+        you.active = 1
+        item.pos = (1, 0)
+        self.assertTrue(b.pickup(you, item))
+        self.assertFalse(you.bursting())
+
+    def test_path_within(self):
+        you = person("你", PLAYER, (0, 0))
+        foe = person("敌", ENEMY, (9, 9))
+        b = Battle([you, foe], width=10, height=10, rng=FixedRng())
+        self.assertEqual(len(b.path_within(you, (5, 0), 1)), 4)
+        self.assertEqual(b.path_within(you, (1, 1), 1), [])
 
 
 class TestSetupRules(unittest.TestCase):
@@ -534,7 +661,7 @@ class TestSelfPlay(unittest.TestCase):
                     setup = practice.Setup()
                     setup.hands = [wid, "knife"]
                     b = practice.make_battle(random.Random(seed), setup)
-                    b.units[0].burst = burst
+                    b.units[0].burst[0] = burst
                     steps = 0
                     while not b.result:
                         steps += 1
