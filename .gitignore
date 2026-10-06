@@ -1,4 +1,7 @@
-__pycache__/
-*.pyc
 .DS_Store
 .claude/
+
+# Godot 自己生成的缓存 (每台电脑自己生成, 不进仓库)
+.godot/
+# 打包出来的游戏
+export/
