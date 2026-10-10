@@ -4,8 +4,10 @@ extends Control
 ## - 救世主系统六项, 每项 1～10 分, 一开始每项 1 分, 再分 18 点
 ## - 右手、左手拿什么 (8 种武器), 穿什么护甲 (3 种)
 ## - 鼠标指着什么, 下面的绿屏幕就说明什么
+## - 「找教官说话」: 试一试跟人说话 (画面在 dialogue_view.gd)
 
 signal start_requested  ## 点了「开打」, 点数也分完了
+signal talk_requested   ## 点了「找教官说话」
 
 const W := 1200
 const H := 720
@@ -15,6 +17,7 @@ const DERIVED_BOX := Rect2(436, 78, 336, 300)
 const HELP_BOX := Rect2(436, 390, 336, 220)
 const GEAR_BOX := Rect2(788, 78, 392, 532)
 const RESET_BTN := Rect2(20, 628, 170, 64)
+const TALK_BTN := Rect2(206, 628, 190, 64)
 const START_BTN := Rect2(W - 220, 624, 200, 76)
 
 const STAT_LETTERS := {"survival": "S", "agility": "A", "vigor": "V", "intellect": "I", "observation": "O", "resolve": "R"}
@@ -115,6 +118,8 @@ func click(p: Vector2) -> void:
 	if RESET_BTN.has_point(p):
 		setup.reset()
 		hint = ""
+	elif TALK_BTN.has_point(p):
+		talk_requested.emit()
 	elif START_BTN.has_point(p):
 		start()
 
@@ -177,6 +182,8 @@ func hovered_help() -> String:
 	for key in gb:
 		if gb[key].has_point(mouse):
 			return weapon_help(key[2]) if key[0] == "hand" else armor_help(key[1])
+	if TALK_BTN.has_point(mouse):
+		return "找教官说话 (T): 试一试跟人说话。学识、意志不一样, 能说的话也不一样; 说着说着也可能直接开打。"
 	return "鼠标指着能力值、武器或者护甲, 这里会说明它管什么。"
 
 
@@ -285,10 +292,12 @@ func _draw() -> void:
 					UIKit.ORANGE, Vector2(GEAR_BOX.position.x + 16, GEAR_BOX.end.y - 32))
 			break
 
-	# 下面: 恢复默认、开打
+	# 下面: 恢复默认、找教官说话、开打
 	UIKit.metal_button(self, RESET_BTN, RESET_BTN.has_point(mouse))
 	UIKit.text(self, 20, "恢复默认", UIKit.AMBER, RESET_BTN.get_center(), "center")
-	UIKit.text(self, 16, "回车 开打 · Esc 退出", Color8(170, 160, 130), Vector2(W / 2.0, RESET_BTN.get_center().y), "center")
+	UIKit.metal_button(self, TALK_BTN, TALK_BTN.has_point(mouse))
+	UIKit.text(self, 20, "找教官说话", UIKit.AMBER, TALK_BTN.get_center(), "center")
+	UIKit.text(self, 16, "回车 开打 · T 说话 · Esc 退出", Color8(170, 160, 130), Vector2(W / 2.0 + 80, RESET_BTN.get_center().y), "center")
 	var ready_now := s.ready()
 	UIKit.red_button(self, Vector2(START_BTN.position.x + 40, START_BTN.get_center().y), 24,
 			START_BTN.has_point(mouse) and ready_now)

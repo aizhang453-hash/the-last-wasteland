@@ -1,14 +1,17 @@
 extends SceneTree
 ## 给画面拍照 (检查画得对不对用, 不是测试)。会开一下游戏窗口, 摆出几种场面, 存成图片, 然后自己关掉。
 ## 运行方法: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹
+## 只拍说话的画面: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹 说话
 
 var out := ""
+var only_talk := false
 var main: Control
 
 
 func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
 	out = args[0] if not args.is_empty() else OS.get_user_data_dir()
+	only_talk = args.size() > 1 and args[1] == "说话"
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	_run()
@@ -31,6 +34,10 @@ func _run() -> void:
 	# 1. 准备画面: 鼠标指着「手雷」
 	sv.mouse = sv.gear_buttons()[["hand", 1, "grenade"]].get_center()
 	await shot("g1_setup")
+	await _talk_shots()
+	if only_talk:
+		quit()
+		return
 	# 2. 开打, 鼠标指着一块空地
 	main._on_start()
 	var arena: ArenaView = main.arena
@@ -109,3 +116,39 @@ func _run() -> void:
 	arena.mouse = ArenaView.END_SETUP.get_center()
 	await shot("g11_end")
 	quit()
+
+
+## 说话的画面 (练习场教官)
+func _talk_shots() -> void:
+	var sv: SetupView = main.setup_view
+	sv.mouse = SetupView.TALK_BTN.get_center()
+	await shot("t1_setup_talk_button")
+	# 默认的准备 (学识 2): 鼠标指着第二个回答
+	main._on_talk()
+	var dv: DialogueView = main.dialogue_view
+	dv.mouse = Vector2(DialogueView.OPT_BOX.position.x + 120, dv.opt_top() + DialogueView.OPT_LINE * 1.5)
+	await wait(0.25)
+	await shot("t2_talk")
+	# 学识、意志高的人: 能看到带「[学识 6]」的回答
+	var saved: Dictionary = main.setup.stats.duplicate()
+	main.setup.stats.merge({"intellect": 6, "resolve": 7}, true)
+	main._on_talk()
+	dv.mouse = Vector2(600, 300)
+	await wait(0.1)
+	await shot("t3_smart")
+	dv.press_key(KEY_3)  # 要钱
+	dv.mouse = DialogueView.REVIEW_BTN.get_center()
+	await wait(0.4)
+	await shot("t4_money")
+	dv.press_key(KEY_1)
+	dv.press_key(KEY_2)  # 问命中几率
+	dv.open_review()
+	dv.mouse = DialogueView.REVIEW_UP.get_center()
+	await shot("t5_review")
+	dv.reviewing = false
+	dv.mouse = DialogueView.BARTER_AT
+	dv.click(DialogueView.BARTER_AT)
+	await shot("t6_barter")
+	main.setup.stats.merge(saved, true)
+	dv.choose(dv.talk.options().size() - 1)  # 「知道了」: 回到准备画面
+	await wait(0.1)
