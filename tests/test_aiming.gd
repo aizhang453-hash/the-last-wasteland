@@ -11,6 +11,15 @@ var foe: Unit
 func before_each() -> void:
 	you = person("你", P, Vector2i(0, 0), 6, 5, 5, ["pistol", "knife"])
 	foe = person("敌", E, Vector2i(3, 0), 5, 5, 5, ["pistol", ""], "none", {"pistol": 8})
+	# 压力放在「紧张」(不加不减), 这里只看瞄准本身; 压力的加减在 test_stress.gd
+	you.stress = 40
+	foe.stress = 40
+
+
+## 挨了暴击压力会涨 (可能慌了、吓呆了): 放回「紧张」, 这里只看部位的效果
+func steady(u: Unit) -> void:
+	u.stress = 40
+	u.frozen = false
 
 
 func battle(rolls := []) -> Battle:
@@ -61,6 +70,7 @@ func test_legs() -> void:
 	b.attack(you, foe, "right_leg")
 	eq(foe.step_cost(), 4)
 	check(foe.statuses().has("右腿瘸了"))
+	steady(foe)
 	b.end_turn()
 	check(b.current() == foe)
 	var most := 0
@@ -88,7 +98,7 @@ func test_arm_drops_weapon_and_pickup() -> void:
 	var item: Battle.GroundItem = b.ground[0]
 	eq(Rules.distance(item.pos, foe.pos), 1)
 	eq(item.loaded, 8)
-	eq(b.take_events().map(func(e): return e["kind"]), ["attack", "drop"])
+	eq(b.take_events().map(func(e): return e["kind"]).slice(0, 2), ["attack", "drop"])
 	b.end_turn()
 	# 右手废了: 用不了, 要换手 (换到左手是拳头)
 	eq(b.attack_problem(foe, you), "右手废了, 先换手")
@@ -138,6 +148,7 @@ func test_groin_knocks_down() -> void:
 	var r: Battle.AttackResult = b.attack(you, foe, "groin")
 	eq(r.effect, "敌疼得倒在地上!")
 	check(foe.statuses().has("倒在地上"))
+	steady(foe)
 	b.end_turn()
 	eq(foe.ap, Rules.action_points(5) - 3)
 	check(not foe.knocked_down)
@@ -163,6 +174,7 @@ func test_eyes_blind() -> void:
 	var before := b.hit_chance(foe, you)
 	b.attack(you, foe, "eyes")
 	check(foe.blind)
+	steady(foe)
 	eq(b.hit_chance(foe, you), maxi(5, before - 30))
 
 

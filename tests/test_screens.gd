@@ -68,7 +68,7 @@ func test_click_enemy_attacks() -> void:
 	check(arena.unit_under(enemy_pos(gunner)) == gunner)
 	click(enemy_pos(gunner))
 	eq(b.units[0].ammo_in_hand(), 7)
-	has_text(b.messages[-1][0], "命中")
+	said(b, "命中")
 	frames(30)
 
 
@@ -339,3 +339,55 @@ func test_setup_help_texts() -> void:
 		sv.mouse = rect.get_center()
 		check(sv.hovered_help() != "" and not sv.hovered_help().begins_with("鼠标指着"))
 	sv.free()
+
+
+# ---------- 压力槽 (2026-10-10) ----------
+
+func test_stress_gauge_tip() -> void:
+	var you: Unit = arena.battle.units[0]
+	eq(arena.button_at(ArenaView.STRESS_BOX.get_center()), "stress")
+	click(ArenaView.STRESS_BOX.get_center())  # 不是按钮, 点了也没事
+	has_text(arena.stress_tip(you), "冷静")
+	you.stress = 50
+	has_text(arena.stress_tip(you), "紧张")
+	has_text(arena.stress_tip(you), "到 70 就慌了")
+	you.stress = 90
+	has_text(arena.stress_tip(you), "慌乱")
+	has_text(arena.stress_tip(you), "大失败")
+
+
+func test_fumble_and_mood_float_over_heads() -> void:
+	var b := arena.battle
+	var you: Unit = b.units[0]
+	var gunner: Unit = b.units[2]
+	you.stress = 90
+	b.dice = TestCase.FixedDice.new([1, 3, 1, 9])
+	click(enemy_pos(gunner))
+	frames(3)
+	check(arena.floats.any(func(f): return f["text"] == "打歪了!"), "头上飘「打歪了!」")
+	frames(30)
+	# 打中小刀强盗, 他慌了: 先飘伤害, 再往上垫一行飘「慌了!」
+	var knife: Unit = b.units[1]
+	you.stress = 40
+	you.ap = 10
+	knife.stress = 60
+	knife.pos = Vector2i(6, 8)
+	b.dice = TestCase.FixedDice.new([1, 100, 9])
+	b.attack(you, knife)
+	frames(20)
+	var mine := arena.floats.filter(func(f): return f["unit"] == knife)
+	eq(mine.map(func(f): return f["text"]), ["-6", "慌了!"])
+	check(mine[1]["lift"] > mine[0]["lift"], "不叠在一起")
+
+
+func test_jammed_gun_fixed_by_ammo_bar() -> void:
+	var you: Unit = arena.battle.units[0]
+	you.jammed[0] = true
+	click(enemy_pos(arena.battle.units[2]))
+	has_text(arena.hint, "卡住了")
+	var ap := you.ap
+	click(ArenaView.AMMO_BAR.get_center())
+	check(not you.jammed_now())
+	eq(you.ap, ap - Rules.RELOAD_AP)
+	frames(15)
+	check(arena.floats.any(func(f): return f["text"] == "修好了"))

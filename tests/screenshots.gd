@@ -1,10 +1,10 @@
 extends SceneTree
 ## 给画面拍照 (检查画得对不对用, 不是测试)。会开一下游戏窗口, 摆出几种场面, 存成图片, 然后自己关掉。
 ## 运行方法: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹
-## 只拍说话的画面: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹 说话 (只拍背包: 最后写「背包」)
+## 只拍说话的画面: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹 说话 (只拍背包: 最后写「背包」; 只拍压力槽: 「压力」)
 
 var out := ""
-var only := ""  # 「说话」或「背包」: 只拍这一种
+var only := ""  # 「说话」「背包」或「压力」: 只拍这一种
 var main: Control
 
 
@@ -30,6 +30,10 @@ func wait(seconds: float) -> void:
 
 func _run() -> void:
 	await process_frame
+	if only == "压力":
+		await _stress_shots()
+		quit()
+		return
 	var sv: SetupView = main.setup_view
 	# 1. 准备画面: 鼠标指着右手拿的东西
 	sv.mouse = SetupView.KIT_SLOTS["hand0"].get_center()
@@ -119,6 +123,61 @@ func _run() -> void:
 	arena.mouse = ArenaView.END_SETUP.get_center()
 	await shot("g11_end")
 	quit()
+
+
+## 压力槽: 下面面板上的一条、指着的说明、敌人的压力、大失败和换段时人头上飘的字
+func _stress_shots() -> void:
+	main._on_start()
+	var arena: ArenaView = main.arena
+	arena.new_battle()
+	var b := arena.battle
+	var you: Unit = b.units[0]
+	var knife: Unit = b.units[1]
+	var gunner: Unit = b.units[2]
+	await wait(0.1)
+	# 1. 开打: 冷静, 指着压力槽
+	arena.mouse = ArenaView.STRESS_BOX.get_center()
+	await shot("s1_calm_tip")
+	# 2. 紧张; 指着持枪强盗 (他也有压力)
+	you.stress = 52
+	gunner.stress = 78
+	arena.mouse = arena.unit_screen_pos(gunner) + Vector2(0, -25)
+	await shot("s2_enemy_tip")
+	# 3. 慌乱, 枪卡住了; 指着压力槽
+	you.stress = 86
+	you.jammed[0] = true
+	arena.mouse = ArenaView.STRESS_BOX.get_center()
+	await shot("s3_panic_tip")
+	# 4. 慌乱时打歪了, 打中自己
+	you.jammed[0] = false
+	you.ap = 10
+	b.dice = TestCase.FixedDice.new([1, 3, 1, 9])
+	b.attack(you, gunner)
+	arena.mouse = Vector2(600, 300)
+	await wait(0.2)
+	await shot("s4_fumble")
+	await wait(1.2)
+	# 5. 打中小刀强盗, 他慌了 (头上飘「慌了!」)
+	you.stress = 40
+	knife.stress = 60
+	knife.pos = Vector2i(6, 8)
+	b.dice = TestCase.FixedDice.new([1, 100, 9])
+	b.attack(you, knife)
+	await wait(0.62)
+	await shot("s5_mood")
+	await wait(1.2)
+	# 6. 冷静时的瞄准窗口
+	you.stress = 12
+	you.ap = 10
+	arena.open_aim(gunner)
+	arena.mouse = arena.aim_buttons()["head"].get_center()
+	await shot("s6_aim_calm")
+	arena.aim_target = null
+	# 7. 战斗里打开背包: 绿屏幕上写着压力
+	arena.do_button("inv")
+	arena.pack_view.mouse = Vector2(80, 300)
+	await shot("s7_pack")
+	arena.pack_view.close()
 
 
 ## 背包、武器架的画面

@@ -1,6 +1,7 @@
 class_name ArenaView
 extends Control
 ## 练习场打仗的画面: 斜着看的方格地面、人、排队头像、战斗记录、按钮、瞄准窗口。全部用代码画, 不用图片。
+## 生命计数器上面一条是压力槽 (冷静绿、紧张黄、慌乱红), 鼠标指着写这一段有什么好处坏处。
 ## 鼠标: 点空格子走过去, 点敌人打他, 右键点敌人 (或者先按「瞄准」) 选部位打, 点地上的武器捡起来,
 ##       点武器格子换单发 / 连发 (冲锋枪)。
 ## 「背包」按钮 (或者 I 键): 打开背包画面 (inventory_view.gd), 花 4 点。
@@ -20,6 +21,7 @@ const ORIGIN := Vector2(W / 2.0, 46)  # 格子 (0, 0) 菱形最上面那个角�
 const STEP_TIME := 0.11    # 走一格的动画几秒
 const AI_DELAY := 0.3      # 敌人每做一件事之间停几秒, 让玩家看清楚
 const HINT_TIME := 2.0     # 提示 (比如「行动点不够」) 显示几秒
+const FLOAT_SPEED := 26.0  # 人头上飘的字每秒往上飘几个像素
 
 const SAND := [Color8(122, 104, 74), Color8(128, 109, 78), Color8(116, 99, 70), Color8(125, 106, 72)]
 const TILE_LINE := Color8(100, 85, 61)
@@ -41,6 +43,7 @@ const CENTER_PLATE := Rect2(462, 544, 400, 172)   # 中间那块板
 const AP_STRIP := Rect2(522, 553, 300, 24)        # 一排行动点灯
 const WEAPON_SLOT := Rect2(488, 584, 366, 126)    # 大武器格子
 const AMMO_BAR := Rect2(488 + 366 - 24, 590, 18, 114)  # 武器格子右边一竖条: 子弹 (点它换子弹)
+const STRESS_BOX := Rect2(874, 562, 96, 16)       # 压力槽 (原版没有, 我们自己的特色): 生命计数器上面一条
 const HP_BOX := Rect2(876, 604, 92, 38)           # 生命计数器
 const DEF_BOX := Rect2(876, 672, 92, 38)          # 防御计数器
 const MAP_BTN := Rect2(986, 612, 78, 28)          # 地图 (以后才有)
@@ -327,6 +330,8 @@ func button_at(p: Vector2) -> String:
 			return which
 	if AMMO_BAR.has_point(p):
 		return "reload"
+	if STRESS_BOX.grow(4).has_point(p):
+		return "stress"  # 不是按钮, 只是指着有说明
 	if WEAPON_SLOT.has_point(p):
 		return "mode"
 	return ""
@@ -453,7 +458,7 @@ func click_aim_window(p: Vector2) -> void:
 ## 瞄准窗口的部位按钮放不下长句子, 换个短说法 (鼠标指着时下面会写全)
 static func short_reason(problem: String) -> String:
 	for pair in [["行动点不够", "点数不够"], ["太远", "太远了"], ["走到旁边", "要走过去"], ["没子弹", "没子弹"],
-			["废了", "手废了"], ["两只手", "要两只手"]]:
+			["废了", "手废了"], ["两只手", "要两只手"], ["卡住", "卡住了"]]:
 		if problem.contains(pair[0]):
 			return pair[1]
 	return problem.left(5)
@@ -525,6 +530,16 @@ func make_anim(event: Dictionary) -> Dictionary:
 			a["dur"] = 0.95
 			for v in r.victims:
 				a["affects"].append(v[0])
+		"fumble":  # 慌乱时的大失败: 打歪了打中人, 动画播完他才倒下
+			var r: Battle.AttackResult = event["result"]
+			a["result"] = r
+			a["dur"] = 0.55
+			if r.victim != null:
+				a["affects"] = [r.victim]
+		"mood":  # 压力换了一段: 人头上飘一句, 不用停
+			a["unit"] = event["unit"]
+			a["words"] = event["words"]
+			a["zone"] = event["zone"]
 		"drop", "pickup":
 			a["unit"] = event["unit"]
 			a["item"] = event["item"]
@@ -533,6 +548,7 @@ func make_anim(event: Dictionary) -> Dictionary:
 				hidden_items.append(event["item"])
 		_:  # reload / switch / getup / stunned
 			a["unit"] = event["unit"]
+			a["fixed"] = event.get("fixed", false)
 			a["dur"] = {"reload": 0.35, "getup": 0.4, "stunned": 0.6}.get(kind, 0.0)
 	return a
 
@@ -554,6 +570,8 @@ func start_anim(a: Dictionary) -> void:
 					float_text(s[0], "-%d" % s[1], UIKit.RED, 0.35)
 			elif not r.hit:
 				float_text(r.target, "没打中", UIKit.TEXT)
+			elif r.perfect:
+				float_text(r.target, "完美一击 -%d" % r.damage, UIKit.YELLOW)
 			elif r.crit:
 				float_text(r.target, "暴击 -%d" % r.damage, UIKit.YELLOW)
 			elif r.damage == 0:
@@ -562,13 +580,23 @@ func start_anim(a: Dictionary) -> void:
 				float_text(r.target, "-%d" % r.damage, UIKit.RED)
 			if r.effect_short != "":  # 暴击打中部位的效果, 比如「左腿瘸了」
 				float_text(r.target, r.effect_short, UIKit.WARN, 0.5)
+		"fumble":
+			var r: Battle.AttackResult = a["result"]
+			turn_to(r.attacker, tile_center(r.attacker.pos), tile_center(r.target.pos))
+			float_text(r.attacker, FUMBLE_WORDS[r.fumble], UIKit.WARN, 0)
+			if r.victim != null:
+				float_text(r.victim, "-%d" % r.damage, UIKit.RED, 0.3 if r.victim != r.attacker else 0.45)
+		"mood":
+			float_text(a["unit"], a["words"], UIKit.WARN if a["words"].begins_with("吓呆") else STRESS_COLORS[a["zone"]], 0.15)
 		"throw":
 			var r: Battle.ThrowResult = a["result"]
 			turn_to(r.attacker, tile_center(r.attacker.pos), tile_center(r.landing))
+			if r.fumble != "":
+				float_text(r.attacker, "扔歪了!", UIKit.WARN, 0)
 			for v in r.victims:
 				float_text(v[0], "-%d" % v[1], UIKit.RED, 0.55)
 		"reload":
-			float_text(a["unit"], "换子弹", UIKit.DIM, 0)
+			float_text(a["unit"], "修好了" if a["fixed"] else "换子弹", UIKit.DIM, 0)
 		"drop":
 			hidden_items.erase(a["item"])
 		"pickup":
@@ -579,6 +607,12 @@ func start_anim(a: Dictionary) -> void:
 			float_text(a["unit"], "晕着……", UIKit.WARN, 0)
 
 
+## 大失败飘在人头上的字
+const FUMBLE_WORDS := {"jam": "枪卡住了!", "drop": "脱手了!", "wild": "打歪了!", "fall": "摔倒了!"}
+## 压力三段的颜色: 冷静绿、紧张黄、慌乱红
+const STRESS_COLORS := {"calm": Color8(96, 224, 88), "tense": Color8(232, 196, 80), "panic": Color8(230, 70, 50)}
+
+
 func turn_to(unit: Unit, from: Vector2, to: Vector2) -> void:
 	if to.x > from.x + 1:
 		facing[unit] = 1
@@ -586,8 +620,14 @@ func turn_to(unit: Unit, from: Vector2, to: Vector2) -> void:
 		facing[unit] = -1
 
 
+## 人头上飘一行字。这个人头上已经有字在飘, 新的就从它上面一行开始飘 (一起往上飘, 不会叠在一起, 比如「-6」和「慌了!」)
 func float_text(unit: Unit, words: String, color: Color, delay := 0.12) -> void:
-	floats.append({"unit": unit, "text": words, "color": color, "t": 0.0, "delay": delay, "dur": 0.9})
+	var lift := 0.0
+	for f in floats:
+		if f["unit"] == unit:
+			var risen := maxf(0.0, f["t"] + delay - f["delay"]) * FLOAT_SPEED  # 新的这行出来的时候, 那行飘了多高
+			lift = maxf(lift, f["lift"] + risen + 20)
+	floats.append({"unit": unit, "text": words, "color": color, "t": 0.0, "delay": delay, "dur": 0.9, "lift": lift})
 
 
 # ---------- 人在画面上的位置 ----------
@@ -761,13 +801,22 @@ func draw_effects() -> void:
 			var end := tgt + Vector2(0, -26) if r.hit else tgt + Vector2(18, -44)
 			draw_line(start, end, UIKit.YELLOW, 2)
 			draw_circle(start, 4, Color8(255, 240, 160))
+	# 打歪了的枪: 一道黄线歪着飞出去 (打中挨着的人就连到他身上)
+	if a.get("kind") == "fumble" and a["result"].fumble == "wild" and not Rules.is_close(a["result"].weapon.kind) and a["t"] < 0.12:
+		var r: Battle.AttackResult = a["result"]
+		var start := unit_screen_pos(r.attacker) + Vector2(facing[r.attacker] * 15, -26)
+		var end := start + Vector2(facing[r.attacker] * 30, 26)  # 打中自己: 往下打到脚边
+		if r.victim != r.attacker:
+			end = unit_screen_pos(r.victim) + Vector2(0, -26)
+		draw_line(start, end, UIKit.YELLOW, 2)
+		draw_circle(start, 4, Color8(255, 240, 160))
 	if a.get("kind") == "throw":
 		draw_throw(a)
 	for f in floats:
 		if f["t"] < f["delay"]:
 			continue
 		var c := unit_screen_pos(f["unit"])
-		var at := c + Vector2(0, -62 - (f["t"] - f["delay"]) * 26)
+		var at := c + Vector2(0, -62 - f["lift"] - (f["t"] - f["delay"]) * FLOAT_SPEED)
 		UIKit.text(self, 20, f["text"], Color.BLACK, at + Vector2(1, 1), "center")
 		UIKit.text(self, 20, f["text"], f["color"], at, "center")
 
@@ -902,6 +951,8 @@ func draw_panel() -> void:
 	UIKit.text(self, 12, "%s · %s" % [hand_label, w.name], hand_color, sp + Vector2(10, 8))
 	var other: String = you.hands[1 - you.active]
 	UIKit.text(self, 12, "另一只手: %s" % Gear.WEAPONS[other if other != "" else "fist"].name, UIKit.DIM, sp + Vector2(10, 24))
+	if you.jammed_now():  # 慌乱时的大失败: 枪卡住了, 点子弹条修
+		UIKit.text(self, 24, "卡住了!", UIKit.WARN, Vector2(sp.x + 10, sp.y + 44))
 	# 右上角: 攻击方式 (跟原版一样, 点格子轮着换); 左下角: 花几点
 	UIKit.text(self, 24, attack_mode(), UIKit.AMBER, Vector2(AMMO_BAR.position.x - 8, sp.y + 6), "topright")
 	var cost := battle.attack_cost(you, "torso" if aiming else "")
@@ -918,6 +969,8 @@ func draw_panel() -> void:
 			draw_rect(AMMO_BAR, UIKit.YELLOW, false, 1)
 		UIKit.text(self, 12, "备用 %d" % you.spare.get(you.weapon_id(), 0), UIKit.DIM,
 				Vector2(AMMO_BAR.position.x - 8, WEAPON_SLOT.end.y - 8), "bottomright")
+
+	draw_stress_gauge(you, hot == "stress")
 
 	# 生命、防御: 原版那种数字计数器
 	var hp_color := Color8(240, 70, 50) if you.hp * 3 < you.max_hp else Color8(232, 226, 210)
@@ -950,10 +1003,46 @@ func draw_panel() -> void:
 	UIKit.text(self, 24, "结束战斗", UIKit.DIM, END_COMBAT_BTN.get_center(), "center")
 
 
+## 压力槽: 生命计数器上面一条 (原版没有这个)。上面写「压力」和现在是哪一段, 下面一条按压力填满,
+## 颜色跟着段走 (冷静绿、紧张黄、慌乱红); 30 和 70 两个分段的地方有刻度
+func draw_stress_gauge(you: Unit, hover: bool) -> void:
+	var box := STRESS_BOX
+	var zone := you.stress_zone()
+	var color: Color = STRESS_COLORS[zone]
+	UIKit.text(self, 12, "压力", UIKit.AMBER, Vector2(box.position.x, box.position.y - 9), "midleft")
+	UIKit.text(self, 12, Rules.STRESS_ZONE_NAMES[zone], color, Vector2(box.end.x, box.position.y - 9), "midright")
+	UIKit.slot(self, box)
+	var inner := box.grow(-3)
+	draw_rect(inner, Color8(14, 14, 12))
+	var fill := inner.size.x * you.stress / float(Rules.STRESS_MAX)
+	if fill > 0:
+		draw_rect(Rect2(inner.position, Vector2(fill, inner.size.y)), color)
+		draw_rect(Rect2(inner.position, Vector2(fill, 2)), color.lightened(0.3))  # 上边亮一点, 有点立体
+	for mark in range(10, Rules.STRESS_MAX, 10):
+		var x := inner.position.x + inner.size.x * mark / float(Rules.STRESS_MAX)
+		var big := mark == Rules.CALM_BELOW or mark == Rules.PANIC_FROM
+		draw_line(Vector2(x, inner.position.y if big else inner.end.y - 3), Vector2(x, inner.end.y), Color(0, 0, 0, 0.7), 2 if big else 1)
+	if hover:
+		draw_rect(box, UIKit.YELLOW, false, 1)
+
+
+## 鼠标指着压力槽: 现在压力多少、这一段有什么好处坏处
+func stress_tip(you: Unit) -> String:
+	var head := "压力 %d · %s: " % [you.stress, Rules.stress_zone_name(you.stress)]
+	match you.stress_zone():
+		"calm":
+			return head + "瞄准容易些, 暴击 +%d%%; 瞄准部位打出暴击, 护甲挡不住" % Rules.CALM_CRIT
+		"tense":
+			return head + "不加不减。挨打会涨, 到 %d 就慌了; 每回合降 %d 点, 打倒敌人降 %d 点" % [
+					Rules.PANIC_FROM, Rules.stress_decay(you.stats["resolve"]), Rules.STRESS_RELIEF]
+	return head + "行动点 +%d、近身伤害 +%d; 可是开枪不准, 还会出大失败。到 %d 会吓呆" % [
+			Rules.PANIC_AP, Rules.PANIC_MELEE, Rules.STRESS_MAX]
+
+
 ## 鼠标指着面板上的按钮: 一句说明 (原版按钮上没写字的地方, 靠这个知道是干什么的)
 const PANEL_TIPS := {
 	"switch": "换手 (Q): 换用另一只手的武器", "mode": "点这里换攻击方式: 单发 → 瞄准 → 连发 (A 瞄准, F 连发)",
-	"reload": "换子弹 (R): 花 2 点", "end": "结束回合 (空格)", "end_combat": "结束战斗: 敌人都没了才能用",
+	"reload": "换子弹 (R): 花 2 点; 枪卡住了也用这个修", "end": "结束回合 (空格)", "end_combat": "结束战斗: 敌人都没了才能用",
 	"inv": "背包 (I): 打开要花 4 点, 在里面换东西不花点数",
 }
 
@@ -965,6 +1054,8 @@ func draw_panel_tip() -> void:
 	if which == "":
 		return
 	var words: String = PANEL_TIPS.get(which, LATER.get(which, ""))
+	if which == "stress":
+		words = stress_tip(player())
 	if which == "end" or which == "mode" or which == "reload" or which == "switch":
 		var you := player()
 		if which == "reload" and you.weapon().magazine == 0:
@@ -1012,6 +1103,7 @@ func draw_tooltip() -> void:
 				["%s · %s" % [target.weapon().name, target.armor.name], UIKit.GREEN_DIM]]
 		if not target.statuses().is_empty():
 			lines.append(["、".join(target.statuses()), UIKit.WARN])
+		lines.append(["压力 %d · %s" % [target.stress, Rules.stress_zone_name(target.stress)], STRESS_COLORS[target.stress_zone()]])
 		var problem := battle.attack_problem(you, target)
 		if aiming:
 			lines.append(["点他, 选打哪里", UIKit.AMBER])
@@ -1109,6 +1201,8 @@ func draw_aim_window() -> void:
 			var words := "暴击几率 %d%%" % battle.crit_chance(you, hover)
 			if bonus > 0:
 				words += " (瞄准这里多 %d%%)" % bonus
+			if you.stress_zone() == "calm":
+				words += " · 冷静: 暴击了护甲挡不住"
 			UIKit.text(self, 16, words, UIKit.GREEN, at, "midleft", true)
 	UIKit.metal_button(self, AIM_CANCEL, AIM_CANCEL.has_point(mouse))
 	UIKit.text(self, 17, "取消 (Esc / 右键)", UIKit.AMBER, AIM_CANCEL.get_center(), "center")

@@ -32,7 +32,7 @@ const STAT_HELP := {
 	"vigor": "体魄: 生命值 (15 + 体魄 × 3), 近身的命中 (每分 +2%) 和伤害 (加 体魄 ÷ 2), 手雷扔多远 (体魄 × 2 格)。大锤要体魄 6, 步枪要 4 (不够会怎样以后再定)。",
 	"intellect": "学识: 医疗、科学、破解、修东西、聪明的对话选项。练习场里还用不到。",
 	"observation": "洞察: 谁先动 (反应值), 远处打得准 (洞察几分, 就几格之内不扣命中), 暴击几率 (洞察 × 2)。",
-	"resolve": "意志: 扛压力、说服人、能带几个同伴。练习场里还用不到。",
+	"resolve": "意志: 扛压力 (挨打时压力少涨, 每分少涨 5%; 每回合开头压力降 意志 + 2 点), 说服人、能带几个同伴。",
 }
 var setup: Practice.Setup
 var mouse := Vector2.ZERO
@@ -258,12 +258,13 @@ func _draw() -> void:
 		["几格内不扣命中", "%d 格" % st["observation"]],
 		["手雷扔多远", "%d 格" % Rules.throw_range(st["vigor"])],
 		["防御", str(Rules.defense(st["agility"], armor.defense, 0))],
+		["压力少涨 / 每回合降", "%d%% / %d 点" % [st["resolve"] * 5, Rules.stress_decay(st["resolve"])]],
 	]
 	var y := DERIVED_BOX.position.y + 16
 	for d in derived:
 		UIKit.text(self, 17, d[0], UIKit.GREEN, Vector2(DERIVED_BOX.position.x + 20, y), "topleft", true)
 		UIKit.text(self, 17, d[1], UIKit.GREEN, Vector2(DERIVED_BOX.end.x - 20, y), "topright", true)
-		y += 27
+		y += 25  # 11 行 (2026-10-10 加了压力那行, 从 27 挤到 25)
 
 	# 说明
 	y = HELP_BOX.position.y + 16

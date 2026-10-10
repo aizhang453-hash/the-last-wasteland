@@ -145,7 +145,7 @@ func test_crit_doubles() -> void:
 	var r: Battle.AttackResult = b.attack(you, foe)
 	check(r.crit)
 	eq(r.damage, 14)
-	has_text(b.messages[-1][0], "暴击")
+	said(b, "暴击!")
 
 
 func test_melee_needs_to_be_next_to() -> void:

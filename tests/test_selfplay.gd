@@ -11,6 +11,7 @@ func check_state(b: Battle) -> void:
 	for u in b.units:
 		check(u.hp >= 0 and u.hp <= u.max_hp, "生命出范围 %s" % u)
 		check(u.ap >= 0, "行动点是负的 %s" % u)
+		check(u.stress >= 0 and u.stress <= Rules.STRESS_MAX, "压力出范围 %s %d" % [u, u.stress])
 		check(b.in_bounds(u.pos), "出了地图 %s" % u)
 		for hand in 2:
 			var wid: String = u.hands[hand]
@@ -21,6 +22,8 @@ func check_state(b: Battle) -> void:
 				check(u.loaded[hand] >= 0 and u.loaded[hand] <= mag, "子弹数不对 %s" % u)
 			if not u.hand_ok(hand):
 				check(wid == "", "废了的手还拿着东西 %s" % u)
+			if u.jammed[hand]:
+				check(wid != "" and Gear.WEAPONS[wid].kind == "gun", "卡住的不是枪 %s" % u)
 		for count in u.spare.values():
 			check(count >= 0, "备用子弹是负的 %s" % u)
 		check(Inventory.room(u) >= 0, "背的东西超重了 %s" % u)
@@ -75,6 +78,34 @@ func test_every_loadout() -> void:
 				var b := Practice.make_battle(Dice.new(seed_value), setup)
 				b.units[0].burst[0] = burst
 				check(play_out(b, 4000) != "", "%s 第 %d 局打不完" % [wid, seed_value])
+
+
+func test_panicky_battles() -> void:
+	# 大家一开打就快吓呆了 (压力 95): 大失败 (卡住、脱手、打歪、摔倒、手雷扔歪) 一直出, 也能打完, 数字一直对
+	var fumbles := {}
+	for seed_value in 200:
+		var setup := Practice.Setup.new()
+		var wid: String = Gear.CHOICES[seed_value % Gear.CHOICES.size()]
+		setup.choose([wid, "fist" if wid == "fist" else "knife"])  # 空手的两只手都空着, 才会用拳头
+		var b := Practice.make_battle(Dice.new(seed_value + 5000), setup)
+		for u in b.units:
+			u.stress = 95
+		var steps := 0
+		while b.result == "":
+			steps += 1
+			if steps > 4000:
+				check(false, "第 %d 局打不完" % seed_value)
+				break
+			if not AI.act(b, b.current()):
+				b.end_turn()
+			for e in b.take_events():
+				if e["kind"] == "fumble":
+					fumbles[e["result"].fumble] = true
+				elif e["kind"] == "throw" and e["result"].fumble != "":
+					fumbles["wild_throw"] = true
+			check_state(b)
+	for what in ["jam", "drop", "wild", "fall", "wild_throw"]:
+		check(fumbles.has(what), "200 局里一次「%s」都没出" % what)
 
 
 func test_random_player() -> void:

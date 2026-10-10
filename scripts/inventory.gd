@@ -83,6 +83,7 @@ static func hand_item(unit: Unit, hand: int) -> Item:
 ## 把东西放到这只手上 (null 是空手)。不检查能不能拿, 先用 hand_problem 看
 static func put_in_hand(unit: Unit, hand: int, item: Item) -> void:
 	unit.burst[hand] = false  # 刚拿到手上的枪先是单发
+	unit.jammed[hand] = false  # 卡住的枪放回背包再拿出来, 也算修好了 (打开背包要 4 点, 比换子弹贵)
 	if item == null:
 		unit.hands[hand] = ""
 		unit.loaded[hand] = 0

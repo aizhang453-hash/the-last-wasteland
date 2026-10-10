@@ -43,6 +43,32 @@ const BODY_PARTS := [
 const ARM_OF_HAND := ["right_arm", "left_arm"]  # 右手 (0) 和左手 (1) 是哪只胳膊
 const LEGS := ["right_leg", "left_leg"]
 
+## 压力槽 (我们自己的特色, 原版没有)。用户 2026-10-10 定的做法写在看板「压力槽」卡片上;
+## 下面的数字是 Claude 先定的, 试玩再调。压力 0～100, 分三段: 冷静 / 紧张 / 慌乱
+const STRESS_START := 10          # 开打时多少 (练习场每局重新开始)
+const STRESS_MAX := 100           # 满了就吓呆
+const CALM_BELOW := 30            # 0～29 冷静
+const PANIC_FROM := 70            # 70～100 慌乱 (中间是紧张)
+const STRESS_AFTER_FREEZE := 70   # 吓呆了一回合以后降回多少
+# 涨多少 (还要按意志打折, 见 stress_gain)
+const STRESS_PER_HP := 3          # 掉 1 点生命 (2026-10-10 量过 2 / 3 / 4, 用户选了 3: 大约四分之一的局你会慌)
+const STRESS_CRIT := 10           # 被暴击, 再加这么多
+const STRESS_SHOT_AT := 3         # 被打了可是没伤到 (没打中、被护甲挡住)
+const STRESS_BLAST := 5           # 手雷在旁边炸 (落点 2 格以内)
+const STRESS_ALLY_DOWN := 15      # 同伴被打倒
+# 降多少
+const STRESS_RELIEF := 15         # 打倒一个敌人, 松一口气
+# 冷静的好处
+const CALM_AIM_EASE := 10         # 瞄准部位的扣分少这么多
+const CALM_CRIT := 5              # 暴击几率加这么多
+# 慌乱的好处和坏处
+const PANIC_AP := 1               # 肾上腺素: 行动点多 1 点
+const PANIC_MELEE := 2            # 近身打的伤害多 2 点
+const PANIC_RANGED := 10          # 手抖: 开枪、扔手雷命中扣这么多
+const PANIC_AIM := 10             # 瞄准部位再扣这么多
+const PANIC_CRIT := 5             # 眼花: 暴击几率扣这么多
+const FUMBLE_CHANCE := 10         # 慌乱时每次攻击, 有百分之几出大失败
+
 
 static func is_close(kind: String) -> bool:
 	return kind in CLOSE_KINDS
@@ -116,10 +142,10 @@ static func distance(a: Vector2i, b: Vector2i) -> int:
 
 ## 命中几率 (百分比)。
 ## 起点: 用枪 40 + 灵巧 × 5; 近身 40 + 灵巧 × 3 + 体魄 × 2
-## 加: 武器准头、特长; 减: 敌人防御、距离 (洞察几分就几格内不扣, 再远每格 4%)、瞄准部位、瞎了 30
+## 加: 武器准头、bonus (特长、压力); 减: 敌人防御、距离 (洞察几分就几格内不扣, 再远每格 4%)、瞄准部位、瞎了 30
 ## 最低 5%, 最高 95%
 static func hit_chance(stats: Dictionary, weapon: Gear.Weapon, target_defense: int, dist: int,
-		aim_penalty: int = 0, perk_bonus: int = 0, blind: bool = false) -> int:
+		aim_penalty: int = 0, bonus: int = 0, blind: bool = false) -> int:
 	var chance: int
 	var far := 0
 	if is_close(weapon.kind):
@@ -127,7 +153,7 @@ static func hit_chance(stats: Dictionary, weapon: Gear.Weapon, target_defense: i
 	else:
 		chance = 40 + stats["agility"] * 5
 		far = maxi(0, dist - stats["observation"]) * 4
-	chance += weapon.accuracy + perk_bonus - target_defense - far - aim_penalty
+	chance += weapon.accuracy + bonus - target_defense - far - aim_penalty
 	if blind:
 		chance -= BLIND_PENALTY
 	return clampi(chance, MIN_HIT, MAX_HIT)
@@ -148,6 +174,75 @@ static func damage_after_armor(raw: int, crit: bool, armor: Gear.Armor) -> int:
 		return 0
 	# 用整数算四舍五入, 免得小数算出 5.499999 这种怪数
 	return floori((left * (100 - armor.resist) + 50) / 100.0)
+
+
+# ---------- 压力槽 ----------
+
+const STRESS_ZONES := ["calm", "tense", "panic"]  # 从低到高
+const STRESS_ZONE_NAMES := {"calm": "冷静", "tense": "紧张", "panic": "慌乱"}
+
+
+## 压力在哪一段: "calm" 冷静 (0～29) / "tense" 紧张 (30～69) / "panic" 慌乱 (70～100)
+static func stress_zone(stress: int) -> String:
+	if stress < CALM_BELOW:
+		return "calm"
+	if stress >= PANIC_FROM:
+		return "panic"
+	return "tense"
+
+
+static func stress_zone_name(stress: int) -> String:
+	return STRESS_ZONE_NAMES[stress_zone(stress)]
+
+
+## 压力真正涨多少: 意志每 1 点少涨 5% (意志 10 只涨一半), 四舍五入
+static func stress_gain(raw: int, resolve: int) -> int:
+	return floori((raw * (100 - clampi(resolve, 0, 10) * 5) + 50) / 100.0)
+
+
+## 每回合开头自己降多少 = 意志 + 2
+static func stress_decay(resolve: int) -> int:
+	return resolve + 2
+
+
+## 瞄准部位的扣分, 算上压力: 冷静少扣 10 (最少不扣); 慌乱再多扣 10。part 是 "" 就是没瞄准, 不扣
+static func aim_penalty(part: String, stress: int) -> int:
+	if part == "":
+		return 0
+	var p := part_penalty(part)
+	match stress_zone(stress):
+		"calm":
+			p = maxi(0, p - CALM_AIM_EASE)
+		"panic":
+			p += PANIC_AIM
+	return p
+
+
+## 压力让命中加减多少 (不算瞄准部位): 慌乱时远处打 (枪、手雷) 扣 10
+static func stress_hit_bonus(stress: int, weapon_kind: String) -> int:
+	if stress_zone(stress) == "panic" and not is_close(weapon_kind):
+		return -PANIC_RANGED
+	return 0
+
+
+## 压力让暴击几率加减多少: 冷静 +5, 慌乱 -5
+static func stress_crit_bonus(stress: int) -> int:
+	match stress_zone(stress):
+		"calm":
+			return CALM_CRIT
+		"panic":
+			return -PANIC_CRIT
+	return 0
+
+
+## 慌乱的时候行动点多 1 点
+static func stress_ap_bonus(stress: int) -> int:
+	return PANIC_AP if stress_zone(stress) == "panic" else 0
+
+
+## 慌乱的时候近身打的伤害多 2 点
+static func stress_melee_bonus(stress: int) -> int:
+	return PANIC_MELEE if stress_zone(stress) == "panic" else 0
 
 
 ## 整数除以 2, 舍掉小数 (负数不会用到)

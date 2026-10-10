@@ -24,6 +24,12 @@ func has_text(text: String, part: String, what := "") -> void:
 		failures.append("%s: 「%s」里应该有「%s」 %s" % [current_test, text, part, what])
 
 
+## 战斗记录里有没有一句话含有 part (压力换了一段的话会跟在后面, 所以不一定是最后一句)
+func said(b: Battle, part: String, what := "") -> void:
+	if not b.messages.any(func(m: Array) -> bool: return String(m[0]).contains(part)):
+		failures.append("%s: 战斗记录里应该有「%s」 %s" % [current_test, part, what])
+
+
 func _is_number(v: Variant) -> bool:
 	return typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT
 

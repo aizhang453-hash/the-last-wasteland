@@ -181,7 +181,7 @@ func _big_slot(rect: Rect2, label: String, it: Inventory.Item, where: String, ha
 		UIKit.text(self, 12, name, UIKit.TEXT, Vector2(rect.get_center().x, rect.end.y - 12), "center")
 
 
-## 右边的绿屏幕: 鼠标指着东西就写说明; 不然写你的能力值、生命、防御、手上拿的、总重量
+## 右边的绿屏幕: 鼠标指着东西就写说明; 不然写你的能力值、生命、防御、压力 (战斗里)、手上拿的、总重量
 func draw_info() -> void:
 	var box := r(INFO)
 	UIKit.crt(self, box)
@@ -202,6 +202,8 @@ func draw_info() -> void:
 		y += 6
 		var hp := "生命 %d/%d" % [unit.hp, unit.max_hp] if battle != null else "生命 %d" % Rules.max_hp(unit.stats["vigor"])
 		y = draw_lines(box, y, "%s   防御 %d" % [hp, unit.defense()])
+		if battle != null:
+			y = draw_lines(box, y, "压力 %d (%s)" % [unit.stress, Rules.stress_zone_name(unit.stress)])
 		y = draw_lines(box, y, "护甲挡 %d 点, 再挡 %d%%" % [unit.armor.threshold, unit.armor.resist])
 		y += 6
 		for hand in 2:

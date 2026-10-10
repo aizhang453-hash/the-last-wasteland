@@ -34,7 +34,7 @@ func test_burst_close_range() -> void:
 	eq(r.damage, 5 * 9 + 18)
 	eq(you.ammo_in_hand(), 10)
 	eq(you.ap, 8 - 6)
-	has_text(b.messages[-1][0], "10 发里打中他 10 发, 有 1 发暴击")
+	said(b, "10 发里打中他 10 发, 有 1 发暴击")
 	eq(r.paths.size(), 10)
 
 
@@ -63,7 +63,7 @@ func test_burst_hits_someone_beside() -> void:
 	eq(r.hits, 4)
 	eq(r.strays.size(), 1)
 	eq([r.strays[0][0].name, r.strays[0][1]], ["乙", 6])
-	has_text(b.messages[-1][0], "有子弹打中了乙, 6 点伤害。")
+	said(b, "有子弹打中了乙, 6 点伤害。")
 
 
 func test_burst_can_hit_your_own_side() -> void:

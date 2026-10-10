@@ -17,6 +17,7 @@ static func nearest_foe(battle: Battle, unit: Unit) -> Unit:
 
 ## 让这个人做一件事。做了返回 true; 没什么能做的了返回 false (该结束回合了)。
 ## 想法很简单:
+## - 枪卡住了 (慌乱时的大失败): 能修就修
 ## - 枪里没子弹: 能换子弹就换
 ## - 手上没武器、旁边地上有: 捡起来 (离得不远就走过去)
 ## - 挑一只最好用的手 (见 _best_hand); 不是现在这只就换过去。
@@ -30,6 +31,9 @@ static func act(battle: Battle, unit: Unit) -> bool:
 	var target := nearest_foe(battle, unit)
 	if target == null:
 		return false
+
+	if unit.jammed_now() and battle.reload_problem(unit) == "":
+		return battle.reload(unit)  # 枪卡住了: 先修好
 
 	if unit.weapon().magazine > 0 and unit.ammo_in_hand() == 0 and battle.reload_problem(unit) == "":
 		return battle.reload(unit)

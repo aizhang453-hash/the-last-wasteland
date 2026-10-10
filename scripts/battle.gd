@@ -6,6 +6,7 @@ extends RefCounted
 ## 画面要知道发生了什么 (好放动画), 就看 events (每件事是一个字典, kind 说是什么事):
 ##   move (unit, path 走过的格子) / attack (result) / throw (result) / reload (unit) / switch (unit)
 ##   drop (unit, item) / pickup (unit, item) / getup (unit) / stunned (unit)
+##   fumble (result: 慌乱时的大失败) / mood (unit, words, zone: 压力换了一段, 比如「慌了」「吓呆了!」)
 ## 战斗记录在 messages 里: 每句是 [这句话, 种类], 种类是 info / player / enemy / good / bad
 
 ## 8 个方向: 横、竖、斜着都能走, 每步都算 1 格
@@ -30,6 +31,9 @@ class AttackResult:
 	var effect_short := "" # 同一件事的短说法, 飘在人头上 (比如「左腿瘸了」)
 	var strays := []       # 连发打中的别人: [[人, 伤害, 倒下没有], ...]
 	var paths := []        # 连发每发子弹飞到哪: [[终点 (格子坐标, 可以是小数), 打中的人或 null], ...]
+	var perfect := false   # 完美一击: 冷静的时候瞄准部位打出暴击, 护甲挡不住
+	var fumble := ""       # 大失败 (慌乱时): "jam" 枪卡住 / "drop" 脱手 / "wild" 打歪了 / "fall" 摔倒; 没出事是 ""
+	var victim: Unit = null  # 打歪了打中的人 (可能是自己); damage、killed 说的是他
 
 
 ## 扔手雷的结果
@@ -41,6 +45,7 @@ class ThrowResult:
 	var chance: int
 	var hit: bool
 	var victims := []      # 炸到的人: [[人, 伤害, 倒下没有], ...]
+	var fumble := ""       # "wild": 慌乱时手一抖扔歪了, 落在自己附近
 
 
 ## 掉在地上的东西 (武器、子弹、护甲)
@@ -116,8 +121,15 @@ func current() -> Unit:
 
 func _begin_turn() -> void:
 	var u := current()
-	u.ap = Rules.action_points(u.stats["agility"])
+	stress_down(u, Rules.stress_decay(u.stats["resolve"]))  # 每回合开头, 压力自己降一点
+	u.ap = Rules.action_points(u.stats["agility"]) + Rules.stress_ap_bonus(u.stress)
 	u.leftover = 0  # 上回合留下的防御, 到自己回合开始就没了
+	if u.frozen:  # 压力满了吓呆: 这回合点数只有一半, 然后压力降回 70
+		u.frozen = false
+		u.ap = Rules.half(u.ap)
+		_set_stress(u, Rules.STRESS_AFTER_FREEZE)
+		events.append({"kind": "mood", "unit": u, "words": "吓呆了……", "zone": "panic"})
+		say("%s吓呆了, 这回合只有 %d 点。" % [u.name, u.ap], _kind(u))
 	if u.knocked_down:
 		u.knocked_down = false
 		u.ap = maxi(0, u.ap - Rules.GET_UP_AP)
@@ -303,6 +315,8 @@ func attack_problem(unit: Unit, target: Unit, part := "") -> String:
 			return "%s废了, 先换手" % Unit.HAND_NAMES[unit.active]
 		if w.hands == 2 and unit.arms_crippled() > 0:
 			return "%s要两只手都好才能用" % w.name
+	if unit.jammed_now():
+		return "%s卡住了, 先修好 (点子弹条或按 R, 花 %d 点)" % [w.name, Rules.RELOAD_AP]
 	if part != "" and unit.bursting():
 		return "连发不能瞄准"
 	if part != "" and w.kind == "throw":
@@ -322,15 +336,19 @@ func attack_problem(unit: Unit, target: Unit, part := "") -> String:
 	return ""
 
 
+## 命中几率, 算上压力 (冷静瞄准容易些; 慌乱开枪不准、瞄准更难)
 func hit_chance(unit: Unit, target: Unit, part := "") -> int:
 	# 手雷是往那一格扔, 不看人躲不躲得开, 所以不减防御
-	var def := 0 if unit.weapon().kind == "throw" else target.defense()
-	return Rules.hit_chance(unit.stats, unit.weapon(), def, Rules.distance(unit.pos, target.pos),
-			Rules.part_penalty(part), 0, unit.blind)
+	var w := unit.weapon()
+	var def := 0 if w.kind == "throw" else target.defense()
+	return Rules.hit_chance(unit.stats, w, def, Rules.distance(unit.pos, target.pos),
+			Rules.aim_penalty(part, unit.stress), Rules.stress_hit_bonus(unit.stress, w.kind), unit.blind)
 
 
+## 暴击几率, 算上压力 (冷静 +5, 慌乱 -5)
 func crit_chance(unit: Unit, part := "") -> int:
-	return Rules.crit_chance(unit.stats["observation"], Rules.aim_crit_bonus(part))
+	return maxi(0, Rules.crit_chance(unit.stats["observation"], Rules.aim_crit_bonus(part))
+			+ Rules.stress_crit_bonus(unit.stress))
 
 
 ## 打一下 (part 是瞄准的部位, 不瞄准就是 "")。打不了返回 null。
@@ -339,10 +357,13 @@ func attack(unit: Unit, target: Unit, part := "") -> Variant:
 	if attack_problem(unit, target, part) != "":
 		return null
 	var w := unit.weapon()
+	if unit.panicking() and dice.roll(1, 100) <= Rules.FUMBLE_CHANCE:
+		return _fumble(unit, target, part)
 	if w.kind == "throw":
 		return _throw(unit, target.pos)
 	if unit.bursting():
 		return _burst(unit, target)
+	var calm := unit.stress_zone() == "calm"
 	unit.ap -= attack_cost(unit, part)
 	if w.magazine > 0:
 		unit.loaded[unit.active] -= 1
@@ -358,8 +379,10 @@ func attack(unit: Unit, target: Unit, part := "") -> Variant:
 		r.crit = dice.roll(1, 100) <= crit_chance(unit, part)
 		var raw := dice.roll(w.dmg_min, w.dmg_max)
 		if Rules.is_close(w.kind):
-			raw += Rules.melee_bonus(unit.stats["vigor"])
-		r.damage = Rules.damage_after_armor(raw, r.crit, target.armor)
+			raw += Rules.melee_bonus(unit.stats["vigor"]) + Rules.stress_melee_bonus(unit.stress)
+		# 完美一击: 冷静的时候瞄准部位打出暴击, 护甲挡不住
+		r.perfect = r.crit and calm and part != ""
+		r.damage = Rules.damage_after_armor(raw, r.crit, Gear.ARMORS["none"] if r.perfect else target.armor)
 		target.hp = maxi(0, target.hp - r.damage)
 	r.hits = 1 if r.hit else 0
 	r.killed = not target.alive()
@@ -368,6 +391,8 @@ func attack(unit: Unit, target: Unit, part := "") -> Variant:
 	var text := "%s用%s打%s (命中 %d%%)……" % [unit.name, w.name, where, r.chance]
 	if not r.hit:
 		text += "没打中。"
+	elif r.perfect:
+		text += "完美一击! 护甲挡不住, %d 点伤害!" % r.damage
 	elif r.crit:
 		text += "暴击! %d 点伤害!" % r.damage
 	elif r.damage == 0:
@@ -378,6 +403,7 @@ func attack(unit: Unit, target: Unit, part := "") -> Variant:
 	if r.killed:
 		events.append({"kind": "attack", "result": r})
 		say("%s倒下了。" % target.name, _victim_kind(target))
+		_downed(target, unit)
 		_check_end()
 		return r
 	# 暴击打中瞄准的部位: 特殊效果
@@ -389,6 +415,75 @@ func attack(unit: Unit, target: Unit, part := "") -> Variant:
 		events.append({"kind": "drop", "unit": target, "item": dropped})
 	if r.effect != "":
 		say(r.effect, _victim_kind(target))
+	_shaken(target, r.damage, r.crit)
+	return r
+
+
+## 慌乱时的大失败 (原版「运气」管的那种倒霉事)。点数照花, 可是没打出去:
+## - 枪: 卡住 (点子弹条或按 R 修好, 花 2 点) / 脱手掉在地上 / 打歪了 (打中自己或挨着的人); 连发不会打歪, 只会卡住或脱手
+## - 近身武器: 脱手 / 打歪了; 空手: 一拳打空, 摔倒在地上
+## - 手雷: 脱手 (手上那一堆都掉在地上) / 扔歪了 (落在自己附近, 照样炸)
+## 用哪一种: 掷一次骰子 (不用 dice.pick, 测试好固定)
+func _fumble(unit: Unit, target: Unit, part: String) -> Variant:
+	var w := unit.weapon()
+	var choices: Array
+	match w.kind:
+		"gun":
+			choices = ["jam", "drop"] if unit.bursting() else ["jam", "drop", "wild"]
+		"melee", "throw":
+			choices = ["drop", "wild"]
+		_:
+			choices = ["fall"]
+	var what: String = choices[dice.roll(1, choices.size()) - 1]
+	if w.kind == "throw" and what == "wild":
+		return _throw(unit, target.pos, true)
+	unit.ap -= attack_cost(unit, part)
+	var r := AttackResult.new()
+	r.attacker = unit
+	r.target = target
+	r.weapon = w
+	r.part = part
+	r.fumble = what
+	var dropped: GroundItem = null
+	match what:
+		"jam":
+			unit.jammed[unit.active] = true
+			say("%s手忙脚乱, %s卡住了!" % [unit.name, w.name], _victim_kind(unit))
+		"drop":
+			dropped = _drop(unit, unit.active)
+			say("%s手一滑, %s脱手掉在地上!" % [unit.name, w.name], _victim_kind(unit))
+		"fall":
+			unit.knocked_down = true
+			say("%s一%s打空, 摔倒在地上!" % [unit.name, "脚" if w.id == "kick" else "拳"], _victim_kind(unit))
+		"wild":
+			if w.magazine > 0:
+				unit.loaded[unit.active] -= 1
+			var near := [unit]  # 打中谁: 自己, 或者挨着自己的人 (要打的那个人除外)
+			for u in units:
+				if u.alive() and u != unit and u != target and Rules.distance(u.pos, unit.pos) <= 1:
+					near.append(u)
+			var victim: Unit = near[dice.roll(1, near.size()) - 1]
+			var raw := dice.roll(w.dmg_min, w.dmg_max)
+			if Rules.is_close(w.kind):
+				raw += Rules.melee_bonus(unit.stats["vigor"]) + Rules.stress_melee_bonus(unit.stress)
+			r.victim = victim
+			r.damage = Rules.damage_after_armor(raw, false, victim.armor)
+			victim.hp = maxi(0, victim.hp - r.damage)
+			r.killed = not victim.alive()
+			say("%s手一抖, 打歪了, 打中了%s! %d 点伤害。" % [unit.name, "自己" if victim == unit else victim.name, r.damage],
+					_victim_kind(victim))
+	events.append({"kind": "fumble", "result": r})
+	if dropped != null:
+		events.append({"kind": "drop", "unit": unit, "item": dropped})
+	if r.victim != null:
+		if r.killed:
+			say("%s倒下了。" % r.victim.name, _victim_kind(r.victim))
+			_downed(r.victim, unit)
+			_check_end()
+			if result == "" and not unit.alive():
+				end_turn()  # 把自己打倒了, 剩下的点数也用不了了
+		else:
+			_shaken(r.victim, r.damage)
 	return r
 
 
@@ -519,11 +614,17 @@ func _burst(unit: Unit, target: Unit) -> AttackResult:
 	if r.killed:
 		say("%s倒下了。" % target.name, _victim_kind(target))
 	var anyone_down := r.killed
+	if r.killed:
+		_downed(target, unit)
 	for s in r.strays:
 		say("有子弹打中了%s, %d 点伤害。" % [s[0].name, s[1]], _victim_kind(s[0]))
 		if s[2]:
 			say("%s倒下了。" % s[0].name, _victim_kind(s[0]))
+			_downed(s[0], unit)
 			anyone_down = true
+	_shaken(target, r.damage, r.crit)
+	for s in r.strays:
+		_shaken(s[0], s[1])
 	if anyone_down:
 		_check_end()
 	return r
@@ -552,7 +653,8 @@ func _trace(unit: Unit, angle: float, max_range: int) -> Array:
 
 ## 扔手雷: 扔准了落在瞄的那一格, 扔偏了落在旁边 1～2 格。
 ## 落点周围 3×3 里的人都被炸到 (包括自己和同伴), 每个人分开算伤害, 再过护甲。
-func _throw(unit: Unit, aim: Vector2i) -> ThrowResult:
+## wild: 慌乱时的大失败, 手一抖扔歪了, 落在自己旁边 1～2 格。
+func _throw(unit: Unit, aim: Vector2i, wild := false) -> ThrowResult:
 	var w := unit.weapon()
 	unit.ap -= w.ap
 	unit.loaded[unit.active] -= 1
@@ -563,14 +665,21 @@ func _throw(unit: Unit, aim: Vector2i) -> ThrowResult:
 	r.attacker = unit
 	r.weapon = w
 	r.aim = aim
-	r.chance = Rules.hit_chance(unit.stats, w, 0, Rules.distance(unit.pos, aim), 0, 0, unit.blind)  # 不减防御
-	r.hit = dice.roll(1, 100) <= r.chance
+	r.chance = Rules.hit_chance(unit.stats, w, 0, Rules.distance(unit.pos, aim), 0,
+			Rules.stress_hit_bonus(unit.stress, w.kind), unit.blind)  # 不减防御
+	var center := aim
+	if wild:
+		r.fumble = "wild"
+		r.hit = false
+		center = unit.pos
+	else:
+		r.hit = dice.roll(1, 100) <= r.chance
 	r.landing = aim
 	if not r.hit:
 		var spots := []
 		for dx in range(-2, 3):
 			for dy in range(-2, 3):
-				var p := aim + Vector2i(dx, dy)
+				var p := center + Vector2i(dx, dy)
 				if (dx != 0 or dy != 0) and in_bounds(p):
 					spots.append(p)
 		if not spots.is_empty():
@@ -581,13 +690,25 @@ func _throw(unit: Unit, aim: Vector2i) -> ThrowResult:
 			u.hp = maxi(0, u.hp - dealt)
 			r.victims.append([u, dealt, not u.alive()])
 	events.append({"kind": "throw", "result": r})
-	say("%s扔出手雷 (命中 %d%%)……%s" % [unit.name, r.chance, "扔准了!" if r.hit else "扔偏了!"], _kind(unit))
+	if wild:
+		say("%s手一抖, 手雷扔歪了!" % unit.name, _victim_kind(unit))
+	else:
+		say("%s扔出手雷 (命中 %d%%)……%s" % [unit.name, r.chance, "扔准了!" if r.hit else "扔偏了!"], _kind(unit))
 	if r.victims.is_empty():
 		say("手雷炸了, 没炸到人。", "info")
 	for v in r.victims:
 		say("%s被炸到, %d 点伤害。" % [v[0].name, v[1]], _victim_kind(v[0]))
 		if v[2]:
 			say("%s倒下了。" % v[0].name, _victim_kind(v[0]))
+			_downed(v[0], unit)
+	# 落点 2 格以内的人都吓一跳 (涨 5), 被炸到的再按伤害涨
+	for u in units:
+		if u.alive() and Rules.distance(u.pos, r.landing) <= Rules.BLAST_RADIUS + 1:
+			var dealt := 0
+			for v in r.victims:
+				if v[0] == u:
+					dealt = v[1]
+			stress_up(u, Rules.STRESS_BLAST + dealt * Rules.STRESS_PER_HP)
 	_check_end()
 	if result == "" and not unit.alive():
 		end_turn()  # 把自己炸倒了, 剩下的点数也用不了了
@@ -623,6 +744,10 @@ func reload_problem(unit: Unit) -> String:
 	if unit.arms_crippled() > 0 and unit.weapon_id() != "kick" and not unit.hand_ok(unit.active):
 		return "%s废了" % Unit.HAND_NAMES[unit.active]
 	var w := unit.weapon()
+	if unit.jammed_now():  # 卡住的枪: 用换子弹修好 (没有备用子弹也能修)
+		if unit.ap < Rules.RELOAD_AP:
+			return "行动点不够 (要 %d 点)" % Rules.RELOAD_AP
+		return ""
 	if w.magazine == 0:
 		return "%s不用子弹" % w.name
 	if unit.ammo_in_hand() >= w.magazine:
@@ -634,17 +759,23 @@ func reload_problem(unit: Unit) -> String:
 	return ""
 
 
-## 把手上的枪装满 (用备用子弹), 花 2 点
+## 把手上的枪装满 (用备用子弹), 花 2 点。枪卡住了也用这个修好 (顺便装满)
 func reload(unit: Unit) -> bool:
 	if reload_problem(unit) != "":
 		return false
 	var w := unit.weapon()
-	var n := mini(w.magazine - unit.ammo_in_hand(), unit.spare[unit.weapon_id()])
-	unit.loaded[unit.active] += n
-	unit.spare[unit.weapon_id()] -= n
+	var fixed := unit.jammed_now()
+	unit.jammed[unit.active] = false
+	var n := mini(w.magazine - unit.ammo_in_hand(), unit.spare.get(unit.weapon_id(), 0))
+	if n > 0:
+		unit.loaded[unit.active] += n
+		unit.spare[unit.weapon_id()] -= n
 	unit.ap -= Rules.RELOAD_AP
-	events.append({"kind": "reload", "unit": unit})
-	say("%s换了子弹 (%s %d/%d)。" % [unit.name, w.name, unit.ammo_in_hand(), w.magazine], _kind(unit))
+	events.append({"kind": "reload", "unit": unit, "fixed": fixed})
+	if fixed:
+		say("%s修好了卡住的%s (%d/%d)。" % [unit.name, w.name, unit.ammo_in_hand(), w.magazine], _kind(unit))
+	else:
+		say("%s换了子弹 (%s %d/%d)。" % [unit.name, w.name, unit.ammo_in_hand(), w.magazine], _kind(unit))
 	return true
 
 
@@ -750,6 +881,60 @@ func throw_away(unit: Unit, where: String, item: Inventory.Item = null, hand := 
 		return null
 	say("%s把%s扔在地上。" % [unit.name, it.name()], _kind(unit))
 	return _put_down(unit, it.copy())
+
+
+# ---------- 压力 ----------
+
+## 压力涨 raw 点 (先按意志打折, 意志每 1 点少涨 5%)。到 100 就吓呆
+func stress_up(u: Unit, raw: int) -> void:
+	if u.alive() and raw > 0:
+		_set_stress(u, u.stress + Rules.stress_gain(raw, u.stats["resolve"]))
+
+
+## 压力降 amount 点 (降不按意志打折)
+func stress_down(u: Unit, amount: int) -> void:
+	if u.alive() and amount > 0:
+		_set_stress(u, u.stress - amount)
+
+
+## 改压力。换了一段 (冷静 / 紧张 / 慌乱) 写进战斗记录, 人头上也飘字; 到 100 就吓呆 (下回合点数只有一半)
+func _set_stress(u: Unit, value: int) -> void:
+	var before := u.stress_zone()
+	u.stress = clampi(value, 0, Rules.STRESS_MAX)
+	var after := u.stress_zone()
+	if u.stress >= Rules.STRESS_MAX and not u.frozen:
+		u.frozen = true
+		say("%s吓呆了!" % u.name, _victim_kind(u))
+		events.append({"kind": "mood", "unit": u, "words": "吓呆了!", "zone": "panic"})
+	elif after != before:
+		var words := ""
+		match after:
+			"calm":
+				words = "冷静下来了"
+			"tense":
+				words = "紧张起来了" if before == "calm" else "镇定了一些"
+			"panic":
+				words = "慌了"
+		var worse := Rules.STRESS_ZONES.find(after) > Rules.STRESS_ZONES.find(before)
+		say("%s%s%s" % [u.name, words, "!" if after == "panic" else "。"], _victim_kind(u) if worse else _kind(u))
+		events.append({"kind": "mood", "unit": u, "words": words + ("!" if after == "panic" else ""), "zone": after})
+
+
+## 这个人挨了一下 (伤害已经扣过了): 掉 1 点生命压力涨 3, 被暴击再涨 10; 没伤到 (没打中、被护甲挡住) 也涨 3
+func _shaken(u: Unit, dealt: int, crit := false) -> void:
+	var raw := dealt * Rules.STRESS_PER_HP if dealt > 0 else Rules.STRESS_SHOT_AT
+	if crit:
+		raw += Rules.STRESS_CRIT
+	stress_up(u, raw)
+
+
+## 有人被打倒了: 他的同伴压力涨 15; 打倒他的人是他的对头的话, 松一口气, 压力降 15
+func _downed(victim: Unit, by: Unit) -> void:
+	for u in units:
+		if u != victim and u.side == victim.side:
+			stress_up(u, Rules.STRESS_ALLY_DOWN)
+	if by != null and by.side != victim.side:
+		stress_down(by, Rules.STRESS_RELIEF)
 
 
 # ---------- 其他 ----------

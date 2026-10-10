@@ -27,6 +27,9 @@ var crippled := {}         # 瘸了、废了的手脚, 比如 {"left_leg": true}
 var blind := false         # 眼睛看不见了: 命中 -30
 var knocked_down := false  # 倒在地上: 下一回合先花 3 点爬起来
 var knocked_out := false   # 被打晕: 下一回合不能动
+var stress := Rules.STRESS_START  # 压力 0～100 (见 Rules 里的压力槽)
+var frozen := false        # 压力满了, 吓呆了: 下一回合行动点只有一半
+var jammed := [false, false]  # 每只手上的枪是不是卡住了 (慌乱时的大失败; 换子弹那个按钮修)
 
 
 func _init(p_name: String, p_side: String, p_stats: Dictionary, p_hands: Array, p_armor := "none",
@@ -104,12 +107,26 @@ func defense() -> int:
 	return Rules.defense(stats["agility"], armor.defense, leftover)
 
 
+## 压力在哪一段: "calm" 冷静 / "tense" 紧张 / "panic" 慌乱
+func stress_zone() -> String:
+	return Rules.stress_zone(stress)
+
+
+func panicking() -> bool:
+	return stress_zone() == "panic"
+
+
+## 手上的枪卡住了吗
+func jammed_now() -> bool:
+	return jammed[active] and weapon_id() != "kick"
+
+
 ## 现在是连发吗 (手上的武器能连发, 而且这把枪换成了连发)
 func bursting() -> bool:
 	return burst[active] and weapon().burst_ap > 0
 
 
-## 身上的伤 (给画面显示)
+## 身上的伤, 还有吓呆了、枪卡住了 (给画面显示)
 func statuses() -> Array:
 	var words := []
 	for p in Rules.BODY_PARTS:
@@ -121,4 +138,8 @@ func statuses() -> Array:
 		words.append("晕了")
 	elif knocked_down:
 		words.append("倒在地上")
+	if frozen:
+		words.append("吓呆了")
+	if jammed_now():
+		words.append("枪卡住了")
 	return words
