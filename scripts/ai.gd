@@ -116,6 +116,8 @@ static func _pick_part(battle: Battle, unit: Unit, target: Unit) -> String:
 static func _nearest_item(battle: Battle, unit: Unit) -> Battle.GroundItem:
 	var best: Battle.GroundItem = null
 	for item in battle.ground:
+		if item.item.kind != "weapon":
+			continue  # 只捡武器
 		if best == null or Rules.distance(unit.pos, item.pos) < Rules.distance(unit.pos, best.pos):
 			best = item
 	return best

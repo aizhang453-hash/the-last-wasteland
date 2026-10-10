@@ -3,7 +3,8 @@ extends Control
 ## 练习场打仗的画面: 斜着看的方格地面、人、排队头像、战斗记录、按钮、瞄准窗口。全部用代码画, 不用图片。
 ## 鼠标: 点空格子走过去, 点敌人打他, 右键点敌人 (或者先按「瞄准」) 选部位打, 点地上的武器捡起来,
 ##       点武器格子换单发 / 连发 (冲锋枪)。
-## 键盘: 空格 结束回合, R 换子弹, Q 换手, A 瞄准, F 单发 / 连发,
+## 「背包」按钮 (或者 I 键): 打开背包画面 (inventory_view.gd), 花 4 点。
+## 键盘: 空格 结束回合, R 换子弹, Q 换手, A 瞄准, F 单发 / 连发, I 背包,
 ##       打完按回车再来一局、按 S 重新准备, Esc 关掉瞄准窗口 / 退出。
 
 signal setup_requested  ## 打完以后点了「重新准备」
@@ -33,7 +34,7 @@ const LOG_LINE := 15.0
 const MONITOR := Rect2(8, 545, 384, 170)          # 带螺丝的显示器外框
 const LOG_BOX := Rect2(30, 566, 340, 128)         # 里面的绿屏幕: 战斗记录
 const SWITCH_AT := Vector2(427, 568)              # 红圆按钮: 换手
-const INV_BTN := Rect2(401, 607, 54, 34)          # 背包 (以后才有)
+const INV_BTN := Rect2(401, 607, 54, 34)          # 背包
 const OPT_AT := Vector2(428, 676)                 # 圆的格栅按钮: 设置 (以后才有)
 const ROUND_R := 21.0                             # 圆按钮多大
 const CENTER_PLATE := Rect2(462, 544, 400, 172)   # 中间那块板
@@ -54,7 +55,7 @@ const RECT_BUTTONS := {"inv": INV_BTN, "map": MAP_BTN, "cha": CHA_BTN, "pap": PA
 		"end": END_TURN_BTN, "end_combat": END_COMBAT_BTN}
 const ROUND_BUTTONS := {"switch": SWITCH_AT, "options": OPT_AT, "perks": PERK_AT}
 ## 还没做的功能: 按钮先摆上, 点了提示
-const LATER := {"inv": "背包: 以后才有", "options": "设置: 以后才有", "map": "地图: 以后才有",
+const LATER := {"options": "设置: 以后才有", "map": "地图: 以后才有",
 		"cha": "角色: 以后才有", "pap": "PAP (个人分析与防护): 以后才有", "perks": "特长: 以后才有"}
 
 ## 地图左上角一小排: 第几轮、排队头像 (原版没有这个, 我们留着, 但缩小了)
@@ -99,6 +100,7 @@ var shown := {}
 var hovered: Unit = null   # 这一帧鼠标指着的人 (每帧只算一次)
 var ground_layer: GroundLayer
 var games := 0
+var pack_view: InventoryView  # 背包画面 (第一次打开时才做)
 
 
 func _init(p_setup: Practice.Setup = null, p_seed := -1) -> void:
@@ -131,6 +133,8 @@ func new_battle() -> void:
 	aiming = false
 	aim_target = null
 	hidden_items = []
+	if pack_view != null:
+		pack_view.visible = false
 	battle.say("小提示: 点空地走过去, 点敌人打他, 右键瞄准, 空格结束回合。", "info")
 	ground_layer.queue_redraw()
 
@@ -195,6 +199,9 @@ func _gui_input(event: InputEvent) -> void:
 
 
 func press_key(key: Key) -> void:
+	if pack_view != null and pack_view.visible:
+		pack_view.press_key(key)
+		return
 	if key == KEY_ESCAPE:
 		if aim_target != null:  # 先关瞄准窗口, 再关瞄准, 最后才退出
 			aim_target = null
@@ -217,6 +224,31 @@ func press_key(key: Key) -> void:
 		do_button("switch")
 	elif key == KEY_A:
 		do_button("aim")
+	elif key == KEY_I:
+		do_button("inv")
+
+
+## 打开背包: 轮到你、点数够才行, 花 4 点 (原版二代也是); 在背包里换东西不再花点数
+func open_pack() -> void:
+	if aim_target != null:
+		return
+	if battle.result != "":
+		show_hint("这一局打完了")
+		return
+	if not players_turn():
+		show_hint("轮到你的时候才能开背包")
+		return
+	var you := battle.current()
+	var why := battle.open_pack_problem(you)
+	if why != "":
+		show_hint(why)
+		return
+	battle.open_pack(you)
+	aiming = false
+	if pack_view == null:
+		pack_view = InventoryView.new()
+		add_child(pack_view)
+	pack_view.open(you, battle)
 
 
 ## 现在的攻击方式 (写在武器格子右上角): 单发 / 瞄准 / 连发
@@ -236,6 +268,9 @@ func do_button(which: String) -> void:
 	if which == "end_combat":
 		if battle.result == "":
 			show_hint("敌人还在, 不能结束战斗")
+		return
+	if which == "inv":
+		open_pack()
 		return
 	if not players_turn() or aim_target != null:
 		return
@@ -625,7 +660,7 @@ func _draw() -> void:
 	draw_planning()
 	for item in battle.ground:
 		if not hidden_items.has(item):
-			UIKit.ground_item(self, tile_center(Vector2(item.pos)), item.weapon_id)
+			UIKit.ground_thing(self, tile_center(Vector2(item.pos)), item.item)
 	draw_units()
 	draw_effects()
 	draw_turn_strip()
@@ -919,6 +954,7 @@ func draw_panel() -> void:
 const PANEL_TIPS := {
 	"switch": "换手 (Q): 换用另一只手的武器", "mode": "点这里换攻击方式: 单发 → 瞄准 → 连发 (A 瞄准, F 连发)",
 	"reload": "换子弹 (R): 花 2 点", "end": "结束回合 (空格)", "end_combat": "结束战斗: 敌人都没了才能用",
+	"inv": "背包 (I): 打开要花 4 点, 在里面换东西不花点数",
 }
 
 
@@ -1011,12 +1047,13 @@ func item_tooltip() -> Array:
 	var item := battle.item_at(screen_to_tile(mouse))
 	if item == null or hidden_items.has(item):
 		return []
-	var w: Gear.Weapon = Gear.WEAPONS[item.weapon_id]
-	var first := "地上: %s" % w.name
-	if w.magazine > 0:
-		first += " (%d 发)" % item.loaded
-	elif w.kind == "throw":
-		first += " (%d 个)" % item.loaded
+	var it: Inventory.Item = item.item
+	var first := "地上: %s" % it.name()
+	if it.kind == "weapon" and Gear.WEAPONS[it.id].magazine > 0:
+		first += " (%d 发)" % it.loaded
+	elif it.stacks():
+		first += " (%d %s)" % [it.count, "发" if it.kind == "ammo" else "个"]
+	first += " · 重 %s 公斤" % Inventory.kg(it.weight())
 	var lines := [[first, UIKit.GREEN]]
 	var problem := battle.pickup_problem(battle.current(), item)
 	if problem == "要走到旁边才能捡":

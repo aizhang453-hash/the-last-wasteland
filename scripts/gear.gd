@@ -70,3 +70,11 @@ static var ARMORS := {
 	"metal": Armor.new("metal", "金属甲", 10, 4, 30),
 }
 const ARMOR_ORDER := ["none", "leather", "metal"]
+
+## 重量 (克, 画面上写成公斤)。2026-10-09 照原版二代大概的轻重定的起点, 以后试玩再调。手雷是一个多重
+const WEAPON_WEIGHT := {"fist": 0, "kick": 0, "knife": 500, "pipe": 2000, "sledgehammer": 6000,
+		"pistol": 1500, "rifle": 4500, "smg": 3000, "grenade": 500}
+const ARMOR_WEIGHT := {"none": 0, "leather": 4000, "metal": 15000}
+const ROUND_WEIGHT := 20  # 一发子弹多重
+## 子弹: 哪种枪用的
+const AMMO_NAMES := {"pistol": "手枪子弹", "rifle": "步枪子弹", "smg": "冲锋枪子弹"}

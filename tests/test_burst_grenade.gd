@@ -164,13 +164,12 @@ func test_setup_points() -> void:
 
 func test_setup_makes_player() -> void:
 	var s := Practice.Setup.new()
-	s.hands = ["fist", "rifle"]
-	s.armor = "none"
+	s.choose(["fist", "rifle"], "none")
 	var you := s.make_player()
 	eq(you.hands, ["", "rifle"])
 	eq(you.spare, {"rifle": 15})
 	eq(you.weapon().name, "拳头")
-	s.hands = ["smg", "grenade"]
+	s.choose(["smg", "grenade"])
 	you = s.make_player()
 	eq(you.loaded, [20, 3])
 	eq(you.spare, {"smg": 20})

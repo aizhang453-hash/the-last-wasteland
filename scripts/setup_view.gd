@@ -1,9 +1,10 @@
 class_name SetupView
 extends Control
-## 开打前的「准备」画面: 照《辐射》二代建角色那一页的感觉 (左边能力值加加减减, 中间算出来的数, 右边挑东西)。
+## 开打前的「准备」画面: 照《辐射》二代建角色那一页的感觉 (左边能力值加加减减, 中间算出来的数, 右边是带的东西)。
 ## - 救世主系统六项, 每项 1～10 分, 一开始每项 1 分, 再分 18 点
-## - 右手、左手拿什么 (8 种武器), 穿什么护甲 (3 种)
-## - 鼠标指着什么, 下面的绿屏幕就说明什么
+## - 右边「你带的东西」: 两只手、护甲、背包里有什么、总重量; 点「武器架」挑带什么 (loot_view.gd),
+##   点「背包」把东西拿在手上、穿上 (inventory_view.gd)。用户 2026-10-09 定的: 照原版那样拖东西
+## - 鼠标指着什么, 中间下面的绿屏幕就说明什么
 ## - 「找教官说话」: 试一试跟人说话 (画面在 dialogue_view.gd)
 
 signal start_requested  ## 点了「开打」, 点数也分完了
@@ -19,6 +20,10 @@ const GEAR_BOX := Rect2(788, 78, 392, 532)
 const RESET_BTN := Rect2(20, 628, 170, 64)
 const TALK_BTN := Rect2(206, 628, 190, 64)
 const START_BTN := Rect2(W - 220, 624, 200, 76)
+const RACK_BTN := Rect2(802, 538, 176, 58)
+const PACK_BTN := Rect2(990, 538, 176, 58)
+## 「你带的东西」里两只手、护甲那三行的格子
+const KIT_SLOTS := {"hand0": Rect2(862, 130, 110, 62), "hand1": Rect2(862, 200, 110, 62), "armor": Rect2(862, 270, 110, 62)}
 
 const STAT_LETTERS := {"survival": "S", "agility": "A", "vigor": "V", "intellect": "I", "observation": "O", "resolve": "R"}
 const STAT_HELP := {
@@ -29,11 +34,11 @@ const STAT_HELP := {
 	"observation": "洞察: 谁先动 (反应值), 远处打得准 (洞察几分, 就几格之内不扣命中), 暴击几率 (洞察 × 2)。",
 	"resolve": "意志: 扛压力、说服人、能带几个同伴。练习场里还用不到。",
 }
-const KIND_NAMES := {"unarmed": "空手", "melee": "近身武器", "gun": "枪", "throw": "投掷"}
-
 var setup: Practice.Setup
 var mouse := Vector2.ZERO
 var hint := ""
+var pack_view: InventoryView  # 背包画面 (盖在准备画面上面; 第一次打开时才做)
+var rack_view: LootView       # 武器架画面
 
 
 func _init(p_setup: Practice.Setup = null) -> void:
@@ -69,17 +74,15 @@ func stat_rows() -> Dictionary:
 	return rects
 
 
-## {["hand", 0 或 1, 武器] 或 ["armor", 护甲]: 方块}
-func gear_buttons() -> Dictionary:
-	var rects := {}
-	for hand in 2:
-		var top := GEAR_BOX.position.y + 52 + hand * 168
-		for i in Gear.CHOICES.size():
-			rects[["hand", hand, Gear.CHOICES[i]]] = Rect2(GEAR_BOX.position.x + 14 + (i % 4) * 92,
-					top + floori(i / 4.0) * 50, 86, 42)
-	for i in Gear.ARMOR_ORDER.size():
-		rects[["armor", Gear.ARMOR_ORDER[i]]] = Rect2(GEAR_BOX.position.x + 14 + i * 124, GEAR_BOX.position.y + 400, 116, 44)
-	return rects
+## 「你带的东西」里那三行上的东西 (空着是 null)
+func kit_item(key: String) -> Inventory.Item:
+	var kit := setup.kit
+	match key:
+		"hand0":
+			return Inventory.hand_item(kit, 0)
+		"hand1":
+			return Inventory.hand_item(kit, 1)
+	return Inventory.Item.new("armor", kit.armor.id) if kit.armor.id != "none" else null
 
 
 # ---------- 鼠标键盘 ----------
@@ -107,15 +110,11 @@ func click(p: Vector2) -> void:
 			else:
 				hint = "%s最高 %d 分" % [Rules.STAT_NAMES[stat], Practice.MAX_STAT]
 			return
-	var gb := gear_buttons()
-	for key in gb:
-		if gb[key].has_point(p):
-			if key[0] == "hand":
-				setup.hands[key[1]] = key[2]
-			else:
-				setup.armor = key[1]
-			return
-	if RESET_BTN.has_point(p):
+	if RACK_BTN.has_point(p):
+		open_rack()
+	elif PACK_BTN.has_point(p):
+		open_pack()
+	elif RESET_BTN.has_point(p):
 		setup.reset()
 		hint = ""
 	elif TALK_BTN.has_point(p):
@@ -130,43 +129,46 @@ func press_enter() -> void:
 
 
 func start() -> void:
-	if not setup.ready():
-		hint = "还有 %d 点没分完" % setup.points_left()
+	var why := setup.problem()
+	if why != "":
+		hint = why
 		return
 	start_requested.emit()
 
 
+## 打开背包画面 (盖在准备画面上面)
+func open_pack() -> void:
+	if pack_view == null:
+		pack_view = InventoryView.new()
+		add_child(pack_view)
+	pack_view.open(setup.kit)
+
+
+func open_rack() -> void:
+	if rack_view == null:
+		rack_view = LootView.new()
+		add_child(rack_view)
+	rack_view.open(setup.kit)
+
+
+## 开着的背包或武器架画面 (都没开是 null)
+func overlay() -> ItemScreen:
+	for v in [pack_view, rack_view]:
+		if v != null and v.visible:
+			return v
+	return null
+
+
+## 键盘: 背包、武器架开着就交给它 (返回 true); 没开返回 false
+func press_key(key: Key) -> bool:
+	var o := overlay()
+	if o == null:
+		return false
+	o.press_key(key)
+	return true
+
+
 # ---------- 说明 ----------
-
-static func weapon_help(wid: String) -> String:
-	var w: Gear.Weapon = Gear.WEAPONS[wid]
-	if wid == "fist":
-		return "拳头: 手里不拿东西。伤害 1～3, 打一下 3 点, 只能打挨着的人, 伤害再加 体魄 ÷ 2。"
-	var words := "%s: %s, %s。伤害 %d～%d, 打一下 %d 点。" % [w.name, KIND_NAMES[w.kind],
-			"双手" if w.hands == 2 else "单手", w.dmg_min, w.dmg_max, w.ap]
-	if w.kind == "melee":
-		words += "只能打挨着的人, 伤害再加 体魄 ÷ 2。"
-	elif w.kind == "gun":
-		words += "射程 %d 格。弹夹 %d 发, 备用子弹 %d 发。" % [w.reach, w.magazine, Gear.SPARE_AMMO.get(wid, 0)]
-	if w.accuracy != 0:
-		words += "准头 %s%d%%。" % ["+" if w.accuracy > 0 else "", w.accuracy]
-	if w.burst_ap > 0:
-		var split := Rules.burst_split(Rules.BURST_ROUNDS)
-		words += "可以连发: 一次 %d 发, 花 %d 点, %d 发对准、%d 发往两边散, 不能瞄准。" % [
-				Rules.BURST_ROUNDS, w.burst_ap, split[0], split[1] + split[2]]
-	if w.kind == "throw":
-		words += "一次带 %d 个。扔多远看体魄 (体魄 × 2 格), 炸 3×3, 范围里的人都受伤, 包括你自己。扔偏了会落到旁边。" % Gear.GRENADES
-	if w.vigor_req > 0:
-		words += "要体魄 %d。" % w.vigor_req
-	return words
-
-
-static func armor_help(aid: String) -> String:
-	var a: Gear.Armor = Gear.ARMORS[aid]
-	if aid == "none":
-		return "没穿护甲: 什么都不挡, 不过也不占地方。"
-	return "%s: 防御 +%d (更难被打中), 先挡掉 %d 点伤害, 剩下的再挡 %d%%。" % [a.name, a.defense, a.threshold, a.resist]
-
 
 ## 鼠标指着的东西的说明
 func hovered_help() -> String:
@@ -178,13 +180,17 @@ func hovered_help() -> String:
 	for stat in rows:
 		if rows[stat].has_point(mouse):
 			return STAT_HELP[stat]
-	var gb := gear_buttons()
-	for key in gb:
-		if gb[key].has_point(mouse):
-			return weapon_help(key[2]) if key[0] == "hand" else armor_help(key[1])
+	for key in KIT_SLOTS:
+		if KIT_SLOTS[key].grow_individual(70, 0, 200, 0).has_point(mouse):
+			var it := kit_item(key)
+			return Inventory.describe(it) if it != null else ("空手: 手里不拿东西就用拳头打。" if key != "armor" else Inventory.armor_help("none"))
+	if RACK_BTN.has_point(mouse):
+		return "武器架: 练习场的武器、子弹、护甲随便拿, 拖到你的背包里就行, 背得动就行 (能背 10 + 体魄 × 10 公斤)。不要的拖回去。"
+	if PACK_BTN.has_point(mouse):
+		return "背包 (I): 把背包里的武器拖到手上、护甲拖到身上。战斗里也能开, 不过要花 %d 点。" % Rules.PACK_AP
 	if TALK_BTN.has_point(mouse):
 		return "找教官说话 (T): 试一试跟人说话。学识、意志不一样, 能说的话也不一样; 说着说着也可能直接开打。"
-	return "鼠标指着能力值、武器或者护甲, 这里会说明它管什么。"
+	return "鼠标指着能力值、带的东西或者按钮, 这里会说明它管什么。"
 
 
 # ---------- 画 ----------
@@ -240,7 +246,7 @@ func _draw() -> void:
 
 	# 中间: 算出来的数
 	var st := s.stats
-	var armor: Gear.Armor = Gear.ARMORS[s.armor]
+	var armor: Gear.Armor = s.kit.armor
 	var derived := [
 		["生命", str(Rules.max_hp(st["vigor"]))],
 		["行动点", str(Rules.action_points(st["agility"]))],
@@ -266,38 +272,62 @@ func _draw() -> void:
 		UIKit.text(self, 16, lines[i], UIKit.GREEN, Vector2(HELP_BOX.position.x + 20, y), "topleft", true)
 		y += 22
 
-	# 右边: 右手、左手、护甲
-	UIKit.text(self, 20, "右手", UIKit.AMBER, GEAR_BOX.position + Vector2(16, 18))
-	UIKit.text(self, 20, "左手", UIKit.AMBER, GEAR_BOX.position + Vector2(16, 18 + 168))
-	UIKit.text(self, 20, "护甲", UIKit.AMBER, GEAR_BOX.position + Vector2(16, 366))
-	var gb := gear_buttons()
-	for key in gb:
-		var rect: Rect2 = gb[key]
-		var chosen: bool
-		var label: String
-		if key[0] == "hand":
-			chosen = s.hands[key[1]] == key[2]
-			label = "空手" if key[2] == "fist" else Gear.WEAPONS[key[2]].name
-		else:
-			chosen = s.armor == key[1]
-			label = Gear.ARMORS[key[1]].name
-		UIKit.metal_button(self, rect, rect.has_point(mouse), chosen)
-		if chosen:
-			draw_rect(rect, UIKit.AMBER, false, 2)
-		UIKit.text(self, 17, label, UIKit.AMBER if chosen else Color8(230, 220, 190), rect.get_center(), "center")
-	for w in s.hands:
-		var weapon: Gear.Weapon = Gear.WEAPONS[w]
-		if weapon.vigor_req > s.stats["vigor"]:
-			UIKit.text(self, 14, "体魄不够: %s要 %d (不够会怎样以后再定)" % [weapon.name, weapon.vigor_req],
-					UIKit.ORANGE, Vector2(GEAR_BOX.position.x + 16, GEAR_BOX.end.y - 32))
+	# 右边: 你带的东西 (两只手、护甲、背包里有什么、总重量), 下面「武器架」「背包」两个按钮
+	var kit := s.kit
+	UIKit.text(self, 24, "你带的东西", UIKit.AMBER, GEAR_BOX.position + Vector2(16, 14))
+	for key in KIT_SLOTS:
+		var rect: Rect2 = KIT_SLOTS[key]
+		var row := rect.grow_individual(70, 0, 200, 0)
+		if row.has_point(mouse):
+			draw_rect(row.grow(3), Color8(52, 48, 38))
+		var label: String = {"hand0": "右手", "hand1": "左手", "armor": "护甲"}[key]
+		UIKit.text(self, 24, label, UIKit.AMBER, Vector2(GEAR_BOX.position.x + 16, rect.get_center().y), "midleft")
+		UIKit.slot(self, rect)
+		var it := kit_item(key)
+		var name := "空手" if key != "armor" else "没穿"
+		var detail := ""
+		if it != null:
+			UIKit.item_picture(self, rect.get_center(), it, 0.42)
+			name = it.name()
+			var w: Gear.Weapon = Gear.WEAPONS.get(it.id) if it.kind == "weapon" else null
+			if w != null and w.magazine > 0:
+				detail = "枪里 %d/%d 发" % [it.loaded, w.magazine]
+			elif it.stacks():
+				detail = "%d 个" % it.count
+		UIKit.text(self, 24, name, UIKit.TEXT if it != null else UIKit.DIM, Vector2(rect.end.x + 14, rect.position.y + 6))
+		if detail != "":
+			UIKit.text(self, 12, detail, UIKit.DIM, Vector2(rect.end.x + 14, rect.position.y + 38))
+	var pack := Inventory.entries(kit)
+	UIKit.text(self, 24, "背包里", UIKit.AMBER, Vector2(GEAR_BOX.position.x + 16, 346))
+	var names := pack.map(func(it: Inventory.Item) -> String: return it.name() + (" ×%d" % it.count if it.stacks() else ""))
+	if names.is_empty():
+		names = ["(空的)"]
+	var shown := mini(names.size(), 12)
+	for i in shown:
+		var text: String = names[i]
+		if i == 11 and names.size() > 12:
+			text = "……还有 %d 样" % (names.size() - 11)
+		UIKit.text(self, 12, text, UIKit.TEXT, Vector2(GEAR_BOX.position.x + 18 + (i % 2) * 186, 380 + floori(i / 2.0) * 17))
+	var room := Inventory.room(kit)
+	UIKit.text(self, 24, "总重 %s / %s 公斤" % [Inventory.kg(Inventory.weight(kit)), Inventory.kg(Inventory.capacity_of(kit))],
+			UIKit.TEXT if room >= 0 else UIKit.ORANGE, Vector2(GEAR_BOX.position.x + 16, 486))
+	for hand in 2:
+		var held: String = kit.hands[hand]
+		if held != "" and Gear.WEAPONS[held].vigor_req > s.stats["vigor"]:
+			UIKit.text(self, 12, "体魄不够: %s要 %d (不够会怎样以后再定)" % [Gear.WEAPONS[held].name, Gear.WEAPONS[held].vigor_req],
+					UIKit.ORANGE, Vector2(GEAR_BOX.position.x + 16, 518))
 			break
+	for b in [[RACK_BTN, "武器架"], [PACK_BTN, "背包"]]:
+		var rect: Rect2 = b[0]
+		UIKit.metal_button(self, rect, rect.has_point(mouse))
+		UIKit.text(self, 24, b[1], UIKit.AMBER, rect.get_center(), "center")
 
 	# 下面: 恢复默认、找教官说话、开打
 	UIKit.metal_button(self, RESET_BTN, RESET_BTN.has_point(mouse))
 	UIKit.text(self, 20, "恢复默认", UIKit.AMBER, RESET_BTN.get_center(), "center")
 	UIKit.metal_button(self, TALK_BTN, TALK_BTN.has_point(mouse))
 	UIKit.text(self, 20, "找教官说话", UIKit.AMBER, TALK_BTN.get_center(), "center")
-	UIKit.text(self, 16, "回车 开打 · T 说话 · Esc 退出", Color8(170, 160, 130), Vector2(W / 2.0 + 80, RESET_BTN.get_center().y), "center")
+	UIKit.text(self, 16, "回车 开打 · T 说话 · I 背包 · Esc 退出", Color8(170, 160, 130), Vector2(W / 2.0 + 80, RESET_BTN.get_center().y), "center")
 	var ready_now := s.ready()
 	UIKit.red_button(self, Vector2(START_BTN.position.x + 40, START_BTN.get_center().y), 24,
 			START_BTN.has_point(mouse) and ready_now)

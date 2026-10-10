@@ -65,12 +65,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	if setup_view.visible:
+		if setup_view.press_key(event.keycode):
+			return  # 背包、武器架开着
 		if event.keycode == KEY_ESCAPE:
 			get_tree().quit()
 		elif event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
 			setup_view.press_enter()
 		elif event.keycode == KEY_T:
 			_on_talk()
+		elif event.keycode == KEY_I:
+			setup_view.open_pack()
 	elif dialogue_view != null and dialogue_view.visible:
 		dialogue_view.press_key(event.keycode)
 	elif arena != null and arena.visible:

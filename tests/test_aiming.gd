@@ -110,7 +110,12 @@ func test_pickup_problems() -> void:
 	var item: Battle.GroundItem = b.ground[0]
 	eq(b.pickup_problem(you, item), "要走到旁边才能捡")
 	you.pos = item.pos + Vector2i(0, 1) if b.unit_at(item.pos + Vector2i(0, 1)) == null else item.pos + Vector2i(0, -1)
-	eq(b.pickup_problem(you, item), "两只手都拿着东西")
+	eq(b.pickup_problem(you, item), "", "两只手都拿着东西也能捡, 放进背包")
+	check(b.pickup(you, item))
+	eq(you.hands, ["pistol", "knife"], "手上的不动")
+	eq(you.pack.size(), 1)
+	eq(you.pack[0].id, "pistol")
+	eq(you.pack[0].loaded, 8, "枪里的子弹跟着枪走")
 
 
 func test_both_arms_means_kick() -> void:

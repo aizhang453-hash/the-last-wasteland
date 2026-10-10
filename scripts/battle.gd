@@ -43,16 +43,22 @@ class ThrowResult:
 	var victims := []      # 炸到的人: [[人, 伤害, 倒下没有], ...]
 
 
-## 掉在地上的武器
+## 掉在地上的东西 (武器、子弹、护甲)
 class GroundItem:
 	var pos: Vector2i
-	var weapon_id: String
-	var loaded: int  # 枪里还有几发 (手雷是有几个)
+	var item: Inventory.Item
+	## 是武器就是武器的名字, 不是武器是 ""
+	var weapon_id: String:
+		get:
+			return item.id if item.kind == "weapon" else ""
+	## 枪里还有几发 (手雷是有几个)
+	var loaded: int:
+		get:
+			return item.count if item.id == "grenade" else item.loaded
 
-	func _init(p_pos: Vector2i, p_weapon_id: String, p_loaded: int) -> void:
+	func _init(p_pos: Vector2i, p_item: Inventory.Item) -> void:
 		pos = p_pos
-		weapon_id = p_weapon_id
-		loaded = p_loaded
+		item = p_item
 
 
 var width: int
@@ -61,7 +67,7 @@ var units: Array
 var dice: Dice
 var messages: Array = []
 var events: Array = []
-var ground: Array = []   # 掉在地上的武器 (GroundItem)
+var ground: Array = []   # 掉在地上的东西 (GroundItem)
 var result := ""         # "" 还在打; "won" 赢了; "lost" 输了
 var round_no := 1
 var order: Array = []
@@ -425,19 +431,22 @@ func _crit_effect(target: Unit, part: String, r: AttackResult) -> GroundItem:
 
 ## 这只手上的武器掉到旁边的空地上 (没空地就掉在脚下)
 func _drop(unit: Unit, hand: int) -> GroundItem:
-	var wid: String = unit.hands[hand]
-	if wid == "":
+	var it := Inventory.hand_item(unit, hand)
+	if it == null:
 		return null
+	Inventory.put_in_hand(unit, hand, null)
+	return _put_down(unit, it)
+
+
+## 东西放到这个人旁边的空地上 (没空地就放在脚下)
+func _put_down(unit: Unit, it: Inventory.Item) -> GroundItem:
 	var spots := []
 	for d in DIRECTIONS:
 		var p: Vector2i = unit.pos + d
 		if in_bounds(p) and unit_at(p) == null and item_at(p) == null:
 			spots.append(p)
 	var p: Vector2i = dice.pick(spots) if not spots.is_empty() else unit.pos
-	var item := GroundItem.new(p, wid, unit.loaded[hand])
-	unit.hands[hand] = ""
-	unit.loaded[hand] = 0
-	unit.burst[hand] = false
+	var item := GroundItem.new(p, it)
 	ground.append(item)
 	return item
 
@@ -674,30 +683,73 @@ func pickup_problem(unit: Unit, item: GroundItem) -> String:
 		return "要走到旁边才能捡"
 	if unit.arms_crippled() == 2:
 		return "两只手都废了, 捡不了"
-	if free_hand(unit) < 0:
-		return "两只手都拿着东西"
-	var w: Gear.Weapon = Gear.WEAPONS[item.weapon_id]
-	if w.hands == 2 and unit.arms_crippled() > 0:
-		return "%s要两只手都好才能用" % w.name
+	if item.item.weight() > Inventory.room(unit):
+		return "背不动了 (最多背 %s 公斤)" % Inventory.kg(Inventory.capacity_of(unit))
 	if unit.ap < Rules.PICKUP_AP:
 		return "行动点不够 (要 %d 点)" % Rules.PICKUP_AP
 	return ""
 
 
-## 捡起地上的武器 (站在旁边就能捡), 花 2 点, 拿在空着的手上并换成用它
+## 捡起地上的东西 (站在旁边就能捡), 花 2 点。
+## 是武器又有空着的手, 就拿在那只手上并换成用它; 不然放进背包 (用户 2026-10-09 定的: 不用非得空着一只手)
 func pickup(unit: Unit, item: GroundItem) -> bool:
 	if pickup_problem(unit, item) != "":
 		return false
+	var it := item.item
 	var hand := free_hand(unit)
-	unit.hands[hand] = item.weapon_id
-	unit.loaded[hand] = item.loaded
-	unit.burst[hand] = false  # 捡起来的枪先是单发
-	unit.active = hand
+	if it.kind == "weapon" and hand >= 0 and Inventory.hand_problem(unit, hand, it) == "":
+		Inventory.put_in_hand(unit, hand, it)
+		unit.active = hand
+		say("%s捡起了%s。" % [unit.name, it.name()], _kind(unit))
+	else:
+		Inventory._put_in(unit, it)
+		say("%s捡起了%s, 放进背包。" % [unit.name, it.name()], _kind(unit))
 	unit.ap -= Rules.PICKUP_AP
 	ground.erase(item)
 	events.append({"kind": "pickup", "unit": unit, "item": item})
-	say("%s捡起了%s。" % [unit.name, Gear.WEAPONS[item.weapon_id].name], _kind(unit))
 	return true
+
+
+# ---------- 背包 ----------
+
+func open_pack_problem(unit: Unit) -> String:
+	var why := _not_your_turn(unit)
+	if why != "":
+		return why
+	if unit.ap < Rules.PACK_AP:
+		return "行动点不够 (要 %d 点)" % Rules.PACK_AP
+	return ""
+
+
+## 打开背包: 花 4 点; 打开以后在里面换东西不花点数
+func open_pack(unit: Unit) -> bool:
+	if open_pack_problem(unit) != "":
+		return false
+	unit.ap -= Rules.PACK_AP
+	say("%s打开背包 (花 %d 点)。" % [unit.name, Rules.PACK_AP], _kind(unit))
+	return true
+
+
+## 在背包画面里把东西扔到地上 (不花点数, 打开背包时花过了)。
+## where: "pack" 背包里的 (item 是 Inventory.entries 里的一样) / "hand" 手上的 (hand 是哪只手) / "armor" 身上的护甲
+func throw_away(unit: Unit, where: String, item: Inventory.Item = null, hand := 0) -> GroundItem:
+	var it: Inventory.Item = null
+	match where:
+		"pack":
+			it = item
+			Inventory.remove(unit, item)
+		"hand":
+			it = Inventory.hand_item(unit, hand)
+			if it != null:
+				Inventory.put_in_hand(unit, hand, null)
+		"armor":
+			if unit.armor.id != "none":
+				it = Inventory.Item.new("armor", unit.armor.id)
+				unit.armor = Gear.ARMORS["none"]
+	if it == null:
+		return null
+	say("%s把%s扔在地上。" % [unit.name, it.name()], _kind(unit))
+	return _put_down(unit, it.copy())
 
 
 # ---------- 其他 ----------

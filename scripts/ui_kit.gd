@@ -303,6 +303,109 @@ static func weapon_picture(ci: CanvasItem, center: Vector2, weapon_id: String) -
 			rounded(ci, Rect2(c + Vector2(-40, -6), Vector2(18, 24)), skin, 8)
 
 
+## 一样东西的图 (背包、武器架的格子里用): 武器用大图缩小; 子弹是一盒; 护甲是一件背心。s: 缩小多少
+static func item_picture(ci: CanvasItem, center: Vector2, item: Inventory.Item, s := 0.5) -> void:
+	ci.draw_set_transform(center, 0, Vector2(s, s))
+	match item.kind:
+		"ammo":
+			_ammo_box(ci, item.id)
+		"armor":
+			_armor(ci, item.id)
+		_:
+			weapon_picture(ci, Vector2.ZERO, item.id)
+	ci.draw_set_transform(Vector2.ZERO)
+
+
+## 一盒子弹 (正中间是 (0, 0)): 纸盒上面立着几发子弹, 不同的枪子弹长短、盒子颜色不一样
+static func _ammo_box(ci: CanvasItem, gun: String) -> void:
+	var tall: int = {"pistol": 22, "smg": 28, "rifle": 40}.get(gun, 24)
+	var label: Color = {"pistol": Color8(200, 150, 60), "smg": Color8(110, 130, 150), "rifle": Color8(110, 120, 70)}.get(gun, AMBER)
+	for i in 6:
+		var x := -40 + i * 15
+		ci.draw_rect(Rect2(x, -tall + 2, 9, tall), Color8(196, 160, 70))  # 弹壳
+		ci.draw_line(Vector2(x + 2, -tall + 4), Vector2(x + 2, 0), Color8(236, 210, 130), 2)
+		poly(ci, [Vector2(x, -tall + 2), Vector2(x + 9, -tall + 2), Vector2(x + 4.5, -tall - 10)], Color8(176, 100, 60))  # 弹头
+	rounded(ci, Rect2(-52, -2, 104, 40), Color8(150, 120, 74), 4, 2, Color8(90, 70, 40))
+	ci.draw_rect(Rect2(-52, 8, 104, 16), label)
+	ci.draw_line(Vector2(-52, 8), Vector2(52, 8), Color8(90, 70, 40), 2)
+	ci.draw_line(Vector2(-52, 24), Vector2(52, 24), Color8(90, 70, 40), 2)
+
+
+## 一件护甲 (正中间是 (0, 0)): 皮甲是棕色带缝线的背心; 金属甲是灰色的铁片, 有铆钉
+static func _armor(ci: CanvasItem, aid: String) -> void:
+	var metal_armor := aid == "metal"
+	var main := Color8(126, 132, 138) if metal_armor else Color8(128, 86, 52)
+	var dark := main.darkened(0.4)
+	var vest := [Vector2(-46, -40), Vector2(-20, -44), Vector2(-12, -30), Vector2(12, -30), Vector2(20, -44),
+			Vector2(46, -40), Vector2(52, -8), Vector2(40, 0), Vector2(40, 42), Vector2(-40, 42), Vector2(-40, 0), Vector2(-52, -8)]
+	poly(ci, vest, main, dark, 2)
+	ci.draw_line(Vector2(0, -30), Vector2(0, 42), dark, 2)
+	if metal_armor:
+		for row in 3:
+			for side in [-1, 1]:
+				rounded(ci, Rect2(side * 20 - 16, -20 + row * 20, 32, 17), main.lightened(0.1), 3, 1, dark)
+				ci.draw_circle(Vector2(side * 20 - 11, -15 + row * 20), 2, Color8(200, 200, 204))
+				ci.draw_circle(Vector2(side * 20 + 11, -15 + row * 20), 2, Color8(200, 200, 204))
+	else:
+		for k in 5:  # 缝线
+			ci.draw_line(Vector2(-34, -6 + k * 10), Vector2(-28, -6 + k * 10), Color8(200, 170, 120), 1)
+			ci.draw_line(Vector2(28, -6 + k * 10), Vector2(34, -6 + k * 10), Color8(200, 170, 120), 1)
+		ci.draw_line(Vector2(-40, 20), Vector2(40, 20), dark, 3)  # 腰带
+		ci.draw_rect(Rect2(-6, 16, 12, 9), Color8(190, 170, 110))
+
+
+## 地上的东西: 武器画小武器; 子弹画一个小盒子; 护甲画一件叠起来的背心
+static func ground_thing(ci: CanvasItem, c: Vector2, item: Inventory.Item) -> void:
+	if item.kind == "weapon":
+		ground_item(ci, c, item.id)
+		return
+	ci.draw_set_transform(c, 0, Vector2(1, 0.5))
+	ci.draw_circle(Vector2.ZERO, 20, Color(1, 0.86, 0.47, 0.27))
+	ci.draw_set_transform(Vector2.ZERO)
+	if item.kind == "ammo":
+		ci.draw_rect(Rect2(c + Vector2(-7, -6), Vector2(14, 8)), Color8(150, 120, 74))
+		ci.draw_rect(Rect2(c + Vector2(-7, -4), Vector2(14, 3)), Color8(200, 150, 60))
+	else:
+		var color := Color8(126, 132, 138) if item.id == "metal" else Color8(128, 86, 52)
+		rounded(ci, Rect2(c + Vector2(-10, -7), Vector2(20, 10)), color, 3, 1, color.darkened(0.4))
+
+
+## 穿上护甲以后人的样子: 衣服换成护甲的颜色
+static func look_with_armor(look: Dictionary, aid: String) -> Dictionary:
+	var l := look.duplicate()
+	if aid == "leather":
+		l["shirt"] = Color8(128, 86, 52)
+	elif aid == "metal":
+		l["shirt"] = Color8(126, 132, 138)
+	return l
+
+
+## 一块放大画的小人 (背包、武器架画面里那个会转身的你)。当成子节点加上去, 用 place 摆好位置
+class FigureBox:
+	extends Control
+	var unit: Unit
+	var zoom := 2.8
+	var time := 0.0
+
+	func place(rect: Rect2, p_zoom := 2.8) -> void:
+		zoom = p_zoom
+		position = rect.position
+		scale = Vector2(zoom, zoom)
+		size = rect.size / zoom
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _process(delta: float) -> void:
+		time += delta
+		queue_redraw()
+
+	func _draw() -> void:
+		if unit == null:
+			return
+		var look := UIKit.look_with_armor(UIKit.look_of(unit.short), unit.armor.id)
+		var facing := 1 if fmod(time, 2.4) < 1.2 else -1  # 像原版一样转来转去
+		UIKit.person(self, Vector2(size.x / 2, size.y - 6), look, facing, unit.weapon_id())
+
+
 ## 地上的小武器 (周围一圈淡黄的光, 好让人看见)
 static func ground_item(ci: CanvasItem, c: Vector2, weapon_id: String) -> void:
 	ci.draw_set_transform(c, 0, Vector2(1, 0.5))

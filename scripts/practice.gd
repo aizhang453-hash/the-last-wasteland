@@ -1,7 +1,7 @@
 class_name Practice
 ## 练习场的布置: 一小块空地, 你和两个强盗。
 ## 这些只是用来试战斗规则的假人, 不是正式剧情。
-## 开打前可以在「准备」画面里自己分能力值、挑两只手的武器和护甲 (见 Setup)。
+## 开打前可以在「准备」画面里自己分能力值, 在武器架上挑带什么 (见 Setup)。
 
 const MAP_SIZE := 14
 const START_POINTS := 18  # 每项先给 1 分, 再自己分 18 点 (加起来 24)
@@ -15,20 +15,34 @@ static func stats(survival: int, agility: int, vigor: int, intellect: int, obser
 			"intellect": intellect, "observation": observation, "resolve": resolve}
 
 
-## 你开打前的准备: 能力值、右手左手拿什么、穿什么护甲
+## 你开打前的准备: 能力值, 还有带的东西 (两只手、护甲、背包、子弹; 在武器架、背包画面里改)
 class Setup:
 	var stats: Dictionary
-	var hands: Array
-	var armor: String
+	## 你带的东西, 用一个「人」装着 (背包画面、武器架画面直接改它); 开打时照着它做一个新的你
+	var kit: Unit
 
 	func _init() -> void:
 		reset()
 
-	## 恢复默认
+	## 恢复默认: 手枪、小刀、皮甲, 一盒手枪子弹
 	func reset() -> void:
 		stats = Practice.stats(3, 6, 5, 2, 5, 3)
-		hands = ["pistol", "knife"]
-		armor = "leather"
+		choose(["pistol", "knife"], "leather")
+
+	## 照这样配好: 两只手拿什么 ("fist" 是空手)、穿什么; 枪配一盒备用子弹, 手雷拿 3 个; 背包里没别的
+	func choose(hands: Array, armor := "leather") -> void:
+		var real_hands := []
+		var ammo := {}
+		for w in hands:
+			var wid: String = "" if w == "fist" else w
+			real_hands.append(wid)
+			if Gear.SPARE_AMMO.has(wid):
+				ammo[wid] = ammo.get(wid, 0) + Gear.SPARE_AMMO[wid]
+		kit = Unit.new("你", Unit.PLAYER, stats, real_hands, armor, ammo, Vector2i(3, 10), "你")
+		for hand in 2:
+			if real_hands[hand] == "grenade":
+				kit.loaded[hand] = Gear.GRENADES
+		kit.stats = stats  # 跟准备画面的能力值是同一份: 改了体魄, 能背多少马上跟着变
 
 	func points_left() -> int:
 		var used := 0
@@ -46,23 +60,23 @@ class Setup:
 		stats[stat] = value
 		return true
 
-	## 点数分完了才能开打
+	## 还不能开打的原因 (能开打就是 ""): 点数没分完, 或者背的东西太重
+	func problem() -> String:
+		if points_left() != 0:
+			return "还有 %d 点没分完" % points_left()
+		if Inventory.room(kit) < 0:
+			return "背太多了 (最多背 %s 公斤), 先放下一些" % Inventory.kg(Inventory.capacity_of(kit))
+		return ""
+
 	func ready() -> bool:
-		return points_left() == 0
+		return problem() == ""
 
 	func make_player() -> Unit:
-		var real_hands := []
-		var ammo := {}
-		for w in hands:
-			var wid: String = "" if w == "fist" else w
-			real_hands.append(wid)
-			if Gear.SPARE_AMMO.has(wid):
-				ammo[wid] = ammo.get(wid, 0) + Gear.SPARE_AMMO[wid]
-		var unit := Unit.new("你", Unit.PLAYER, stats, real_hands, armor, ammo, Vector2i(3, 10), "你")
-		for hand in 2:
-			if real_hands[hand] == "grenade":
-				unit.loaded[hand] = Gear.GRENADES
-		return unit
+		var you := Unit.new("你", Unit.PLAYER, stats, kit.hands, kit.armor.id, kit.spare, Vector2i(3, 10), "你")
+		you.loaded = kit.loaded.duplicate()
+		you.burst = kit.burst.duplicate()
+		you.pack = kit.pack.map(func(it: Inventory.Item) -> Inventory.Item: return it.copy())
+		return you
 
 
 static func make_battle(dice: Dice = null, setup: Setup = null) -> Battle:

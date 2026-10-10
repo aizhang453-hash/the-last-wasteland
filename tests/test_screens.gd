@@ -163,8 +163,6 @@ func test_aim_mode_stays_after_aimed_shot() -> void:
 
 
 func test_placeholder_buttons() -> void:
-	click(ArenaView.INV_BTN.get_center())
-	eq(arena.hint, "背包: 以后才有")
 	click(ArenaView.PAP_BTN.get_center())
 	has_text(arena.hint, "PAP (个人分析与防护)")
 	click(ArenaView.PERK_AT)
@@ -320,23 +318,24 @@ func test_setup_points_and_limits() -> void:
 	sv.free()
 
 
-func test_setup_choose_gear_and_reset() -> void:
+func test_setup_reset_gear() -> void:
 	var sv := SetupView.new()
-	setup_click(sv, sv.gear_buttons()[["hand", 0, "smg"]].get_center())
-	setup_click(sv, sv.gear_buttons()[["hand", 1, "grenade"]].get_center())
-	setup_click(sv, sv.gear_buttons()[["armor", "metal"]].get_center())
+	sv.setup.choose(["smg", "grenade"], "metal")
+	Inventory.add(sv.setup.kit, Inventory.weapon("rifle"))
 	var you := sv.setup.make_player()
 	eq(you.hands, ["smg", "grenade"])
 	eq(you.loaded, [20, 3])
 	eq(you.armor.name, "金属甲")
+	eq(you.pack.size(), 1, "背包里的东西也带上")
 	setup_click(sv, SetupView.RESET_BTN.get_center())
-	eq(sv.setup.hands, ["pistol", "knife"])
+	eq(sv.setup.kit.hands, ["pistol", "knife"])
+	eq(sv.setup.kit.pack, [])
 	sv.free()
 
 
 func test_setup_help_texts() -> void:
 	var sv := SetupView.new()
-	for rect in sv.gear_buttons().values() + sv.stat_rows().values():
+	for rect in SetupView.KIT_SLOTS.values() + sv.stat_rows().values() + [SetupView.RACK_BTN, SetupView.PACK_BTN]:
 		sv.mouse = rect.get_center()
 		check(sv.hovered_help() != "" and not sv.hovered_help().begins_with("鼠标指着"))
 	sv.free()

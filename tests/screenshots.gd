@@ -1,17 +1,17 @@
 extends SceneTree
 ## 给画面拍照 (检查画得对不对用, 不是测试)。会开一下游戏窗口, 摆出几种场面, 存成图片, 然后自己关掉。
 ## 运行方法: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹
-## 只拍说话的画面: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹 说话
+## 只拍说话的画面: Godot --path . -s tests/screenshots.gd -- 存图片的文件夹 说话 (只拍背包: 最后写「背包」)
 
 var out := ""
-var only_talk := false
+var only := ""  # 「说话」或「背包」: 只拍这一种
 var main: Control
 
 
 func _initialize() -> void:
 	var args := OS.get_cmdline_user_args()
 	out = args[0] if not args.is_empty() else OS.get_user_data_dir()
-	only_talk = args.size() > 1 and args[1] == "说话"
+	only = args[1] if args.size() > 1 else ""
 	main = load("res://scenes/main.tscn").instantiate()
 	root.add_child(main)
 	_run()
@@ -31,11 +31,14 @@ func wait(seconds: float) -> void:
 func _run() -> void:
 	await process_frame
 	var sv: SetupView = main.setup_view
-	# 1. 准备画面: 鼠标指着「手雷」
-	sv.mouse = sv.gear_buttons()[["hand", 1, "grenade"]].get_center()
+	# 1. 准备画面: 鼠标指着右手拿的东西
+	sv.mouse = SetupView.KIT_SLOTS["hand0"].get_center()
 	await shot("g1_setup")
-	await _talk_shots()
-	if only_talk:
+	if only != "背包":
+		await _talk_shots()
+	if only != "说话":
+		await _pack_shots()
+	if only != "":
 		quit()
 		return
 	# 2. 开打, 鼠标指着一块空地
@@ -116,6 +119,54 @@ func _run() -> void:
 	arena.mouse = ArenaView.END_SETUP.get_center()
 	await shot("g11_end")
 	quit()
+
+
+## 背包、武器架的画面
+func _pack_shots() -> void:
+	var sv: SetupView = main.setup_view
+	sv.open_rack()
+	var rv := sv.rack_view
+	await wait(0.1)
+	rv.mouse = rv.slot_rect(LootView.RACK.x, LootView.RACK.y, 4).get_center()
+	await shot("p1_rack")
+	# 拖着冲锋枪往背包里放
+	rv.press(rv.slot_rect(LootView.RACK.x, LootView.RACK.y, 5).get_center())
+	rv.mouse = rv.slot_rect(LootView.MINE.x, LootView.MINE.y, 1).get_center() + Vector2(10, 6)
+	await shot("p2_rack_drag")
+	rv.release(rv.mouse)
+	rv.release(rv.mouse)
+	rv.press(rv.slot_rect(LootView.RACK.x, LootView.RACK.y, 4).get_center())  # 步枪
+	rv.release(rv.slot_rect(LootView.MINE.x, LootView.MINE.y, 0).get_center())
+	rv.scroll_rack = 6  # 往下翻: 手雷、子弹、护甲
+	for i in [0, 0, 2, 5]:  # 两个手雷、一盒步枪子弹、金属甲
+		rv.press(rv.slot_rect(LootView.RACK.x, LootView.RACK.y, i).get_center())
+		rv.release(rv.slot_rect(LootView.MINE.x, LootView.MINE.y, 0).get_center())
+	rv.close()
+	sv.open_pack()
+	var pv := sv.pack_view
+	await wait(0.1)
+	pv.mouse = Vector2(1100, 600)
+	await shot("p3_pack")
+	pv.mouse = pv.slot_rect(InventoryView.LIST.x, InventoryView.LIST.y, 0).get_center()
+	await shot("p4_pack_hover")
+	pv.press(pv.slot_rect(InventoryView.LIST.x, InventoryView.LIST.y, 1).get_center())
+	pv.mouse = pv.hand_rect(0).get_center() + Vector2(12, 8)
+	await shot("p5_pack_drag")
+	pv.release(pv.mouse)
+	pv.close()
+	sv.mouse = SetupView.PACK_BTN.get_center()
+	await shot("p6_setup_kit")
+	# 战斗里打开背包
+	main._on_start()
+	var arena: ArenaView = main.arena
+	arena.new_battle()
+	await wait(0.1)
+	arena.do_button("inv")
+	arena.pack_view.mouse = Vector2(80, 300)
+	await shot("p7_battle_pack")
+	arena.pack_view.close()
+	main.setup.reset()
+	main._on_back_to_setup()
 
 
 ## 说话的画面 (练习场教官)

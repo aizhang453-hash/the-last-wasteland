@@ -15,7 +15,7 @@ func check_state(b: Battle) -> void:
 		for hand in 2:
 			var wid: String = u.hands[hand]
 			if wid != "" and Gear.WEAPONS[wid].kind == "throw":
-				check(u.loaded[hand] >= 1 and u.loaded[hand] <= Gear.GRENADES, "手雷个数不对 %s" % u)
+				check(u.loaded[hand] >= 1, "手雷个数不对 %s" % u)
 			else:
 				var mag: int = Gear.WEAPONS[wid].magazine if wid != "" else 0
 				check(u.loaded[hand] >= 0 and u.loaded[hand] <= mag, "子弹数不对 %s" % u)
@@ -23,6 +23,7 @@ func check_state(b: Battle) -> void:
 				check(wid == "", "废了的手还拿着东西 %s" % u)
 		for count in u.spare.values():
 			check(count >= 0, "备用子弹是负的 %s" % u)
+		check(Inventory.room(u) >= 0, "背的东西超重了 %s" % u)
 		if u.alive():
 			check(not seen.has(u.pos), "两个人站在同一格")
 			seen[u.pos] = true
@@ -70,7 +71,7 @@ func test_every_loadout() -> void:
 		for burst in ([false, true] if Gear.WEAPONS[wid].burst_ap > 0 else [false]):
 			for seed_value in 15:
 				var setup := Practice.Setup.new()
-				setup.hands = [wid, "knife"]
+				setup.choose([wid, "knife"])
 				var b := Practice.make_battle(Dice.new(seed_value), setup)
 				b.units[0].burst[0] = burst
 				check(play_out(b, 4000) != "", "%s 第 %d 局打不完" % [wid, seed_value])

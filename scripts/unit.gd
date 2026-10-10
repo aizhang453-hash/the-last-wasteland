@@ -12,7 +12,8 @@ var side: String
 var stats: Dictionary
 var hands: Array           # 两只手拿的武器, 比如 ["pistol", "knife"]; "" 是空手
 var active := 0            # 现在用哪只手: 0 右手, 1 左手
-var spare: Dictionary      # 备用子弹, 比如 {"pistol": 24}
+var spare: Dictionary      # 备用子弹 (放在背包里), 比如 {"pistol": 24}
+var pack: Array = []       # 背包里的武器和护甲 (Inventory.Item); 子弹记在 spare 里
 var loaded: Array          # 每只手的枪里现在有几发 (一开始是满的); 拿的是手雷的话, 是手上有几个手雷
 var burst := [false, false]  # 每只手上的枪是不是换成了连发 (记在枪上, 换手、捡起别的枪不会带过去)
 var armor: Gear.Armor

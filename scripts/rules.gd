@@ -17,7 +17,8 @@ const STAT_ORDER := ["survival", "agility", "vigor", "intellect", "observation",
 const CLOSE_KINDS := ["unarmed", "melee"]
 
 const RELOAD_AP := 2       # 换子弹花几点
-const PICKUP_AP := 2       # 捡起地上的武器花几点
+const PICKUP_AP := 2       # 捡起地上的东西花几点
+const PACK_AP := 4         # 战斗里打开背包花几点 (原版二代也是 4 点; 打开以后在里面换东西不花)
 const AIM_AP := 1          # 瞄准部位多花几点
 const GET_UP_AP := 3       # 被打倒在地上, 下一回合先花几点爬起来
 const BLIND_PENALTY := 30  # 瞎了以后命中扣多少
